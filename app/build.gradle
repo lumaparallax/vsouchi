@@ -1,0 +1,108 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+import java.util.Properties
+
+def skipNative = project.hasProperty("skipNative")
+def props = new Properties()
+def propsFile = rootProject.file('key.properties')
+def hasKeyProps = propsFile.exists()
+
+if (hasKeyProps) {
+    propsFile.withInputStream { props.load(it) }
+}
+
+android {
+    namespace = 'io.github.lumaparallax.vsouchi'
+    compileSdk = 34
+    ndkVersion = "26.1.10909125"
+
+    buildFeatures {
+        aidl = true
+        buildConfig = true
+    }
+
+    defaultConfig {
+        applicationId "io.github.lumaparallax.vsouchi"
+        minSdk = 26
+        targetSdk = 34
+        versionCode 1
+        versionName "1.0.0"
+
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+    }
+
+    splits {
+        abi {
+            enable = true
+            reset()
+            include "arm64-v8a", "x86_64"
+            universalApk = true
+        }
+    }
+
+    signingConfigs {
+        debug {
+            storeFile rootProject.file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+        release {
+            if (hasKeyProps) {
+                storeFile rootProject.file(props['storeFile'])
+                storePassword props['storePassword']
+                keyAlias props['keyAlias']
+                keyPassword props['keyPassword']
+                storeType 'PKCS12'
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            signingConfig = signingConfigs.debug
+            debuggable = true
+        }
+        release {
+            if (hasKeyProps) {
+                signingConfig = signingConfigs.release
+            }
+            minifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile('proguard-android-optimize.txt'),
+                'proguard-rules.pro'
+            )
+        }
+    }
+
+    if (!skipNative) {
+        externalNativeBuild {
+            cmake {
+                path "src/main/cpp/CMakeLists.txt"
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+dependencies {
+    compileOnly project(':classLoader:stub')
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
+}

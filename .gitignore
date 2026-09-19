@@ -1,0 +1,32 @@
+# Gradle and build folders
+**/build/
+.gradle/
+**/jniLibs
+
+# Local configuration files
+local.properties
+
+# Sensitive signing files
+*.keystore
+!debug.keystore
+key.properties
+
+# IDE settings and workspaces
+.idea/
+*.iml
+*.iws
+
+# Built application files
+*.apk
+*.ap_
+*.aab
+*.aar
+
+# NDK and C++ builds
+.cxx/
+.externalNativeBuild/
+CMakeLists.txt.user
+
+# OS-specific files
+.DS_Store
+Thumbs.db

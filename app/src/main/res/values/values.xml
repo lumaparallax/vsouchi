@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.vSouchi" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <!--empty for now-->
+    </style>
+</resources>

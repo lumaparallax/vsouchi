@@ -1,0 +1,129 @@
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.util.Properties
+
+if (gradle.startParameter.taskNames.isEmpty()) {
+    apply plugin: 'com.android.library'
+} else {
+    apply plugin: 'com.android.application'
+}
+
+def props = new Properties()
+def propsFile = rootProject.file('key.properties')
+def hasKeyProps = propsFile.exists()
+
+if (hasKeyProps) {
+    propsFile.withInputStream { props.load(it) }
+}
+
+def getCertificateSha256(File ksFile, String password, String alias) {
+    if (!ksFile.exists()) {
+        throw new GradleException("Required keystore not found: ${ksFile.absolutePath}")
+    }
+    def ks = KeyStore.getInstance(KeyStore.getDefaultType())
+    ksFile.withInputStream { ks.load(it, password.toCharArray()) }
+    def cert = ks.getCertificate(alias)
+    if (cert == null) {
+        throw new GradleException("Key alias '${alias}' not found in ${ksFile.name}")
+    }
+    MessageDigest md = MessageDigest.getInstance("SHA-256")
+    return md.digest(cert.encoded).collect { String.format("%02x", it) }.join()
+}
+
+android {
+    namespace = 'io.github.lumaparallax.vsouchi.classLoader'
+    compileSdk = 34
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    defaultConfig {
+        minSdk = 26
+        applicationId = "io.github.lumaparallax.vsouchi"
+
+        buildConfigField "String", "logTag", "\"vsouchi\""
+        buildConfigField "String", "packageNotInstalledErrorText",
+                "\"Target package not installed for ARCH\""
+        buildConfigField "String", "packageSignatureMismatchErrorText",
+                "\"Package signature mismatch\""
+        buildConfigField "String", "CLASS_ID",
+                "\"io.github.lumaparallax.vsouchi.DaemonEntry\""
+    }
+
+    signingConfigs {
+        debug {
+            storeFile = rootProject.file('debug.keystore')
+            storePassword = 'android'
+            keyAlias = 'androiddebugkey'
+            keyPassword = 'android'
+        }
+        release {
+            if (hasKeyProps) {
+                storeFile = rootProject.file(props['storeFile'])
+                storePassword = props['storePassword']
+                keyAlias = props['keyAlias']
+                keyPassword = props['keyPassword']
+                storeType = 'PKCS12'
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            debuggable = true
+            signingConfig = signingConfigs.debug
+
+            def debugSha256 = getCertificateSha256(
+                rootProject.file('debug.keystore'),
+                'android',
+                'androiddebugkey'
+            )
+            buildConfigField "String", "SIGNATURE_SHA256", "\"${debugSha256}\""
+        }
+        release {
+            minifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile('proguard-android-optimize.txt'),
+                'proguard-rules.pro'
+            )
+
+            if (hasKeyProps) {
+                signingConfig = signingConfigs.release
+                def releaseSha256 = getCertificateSha256(
+                    rootProject.file(props['storeFile']),
+                    props['storePassword'],
+                    props['keyAlias']
+                )
+                buildConfigField "String", "SIGNATURE_SHA256", "\"${releaseSha256}\""
+            } else {
+                gradle.taskGraph.whenReady { taskGraph ->
+                    if (taskGraph.allTasks.any { it.name.toLowerCase().contains("release") }) {
+                        throw new GradleException(
+                            "Release build requested, but 'key.properties' was not found in the root directory."
+                        )
+                    }
+                }
+                buildConfigField "String", "SIGNATURE_SHA256", "\"\""
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+    }
+
+    if (!gradle.startParameter.taskNames.isEmpty()) {
+        applicationVariants.configureEach { variant ->
+            variant.outputs.configureEach {
+                outputFileName = "classLoader-${variant.buildType.name}.apk"
+            }
+        }
+    }
+}
+
+dependencies {
+    compileOnly project(':classLoader:stub')
+}

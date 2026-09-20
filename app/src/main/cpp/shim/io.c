@@ -19,12 +19,19 @@
 #include <sys/un.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/ioctl.h>
 #include <dirent.h>
-#include <android/log.h>
-#include "vsouchi_ipc.h"
 #include "shim/internal.h"
+#include "shim/log.h"
+#include "vsouchi_ipc.h"
 
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "vSouchi:ShimIO", __VA_ARGS__)
+#ifdef __ANDROID__
+typedef int ioctl_req_t;
+#else
+typedef unsigned long ioctl_req_t;
+#endif
+
+#define LOGI(...) SHIM_LOGI("vSouchi:ShimIO", __VA_ARGS__)
 
 int g_vsouchi_fds[1024] = {0};
 int g_shim_memfds[16] = {-1}; 
@@ -47,12 +54,15 @@ int (*real_access)(const char *pathname, int mode) = NULL;
 DIR *(*real_opendir)(const char *name) = NULL;
 long (*real_syscall)(long number, ...) = NULL;
 int (*real_close)(int fd) = NULL;
-int (*real_ioctl)(int fd, int request, ...) = NULL;
+int (*real_ioctl)(int fd, ioctl_req_t request, ...) = NULL;
 void *(*real_mmap)(void *addr, size_t length, int prot, int flags, int fd, off_t offset) = NULL;
 void *(*real_mmap64)(void *addr, size_t length, int prot, int flags, int fd, off64_t offset) = NULL;
 int (*real_poll)(struct pollfd *fds, nfds_t nfds, int timeout) = NULL;
 int (*real_select)(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout) = NULL;
 int (*real_pselect)(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, const struct timespec *timeout, const sigset_t *sigmask) = NULL;
+FILE *(*real_fopen)(const char *pathname, const char *mode) = NULL;
+FILE *(*real_fopen64)(const char *pathname, const char *mode) = NULL;
+ssize_t (*real_readlink)(const char *pathname, char *buf, size_t bufsiz) = NULL;
 
 int shim_v4l2_handle_ioctl(int fd, int request, void* arg);
 
@@ -89,6 +99,14 @@ void init_pointers() {
     real_poll = dlsym(RTLD_NEXT, "poll");
     real_select = dlsym(RTLD_NEXT, "select");
     real_pselect = dlsym(RTLD_NEXT, "pselect");
+    real_readlink = dlsym(RTLD_NEXT, "readlink");
+    real_fopen = dlsym(RTLD_NEXT, "fopen");
+    real_fopen64 = dlsym(RTLD_NEXT, "fopen64");
+}
+
+// Forward libv4l2 mmap variant to 64-bit offset handler
+void *v4l2_mmap(void *addr, size_t length, int prot, int flags, int fd, int64_t offset) {
+    return mmap64(addr, length, prot, flags, fd, (off64_t)offset);
 }
 
 static int connect_to_broker() {
@@ -332,6 +350,42 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
     return real_openat64 ? real_openat64(dirfd, pathname, flags, mode) : -1;
 }
 
+// ==========================================
+// INTERCEPTORS: SYSFS TOPOLOGY & STANDARD IO
+// ==========================================
+ssize_t readlink(const char *pathname, char *buf, size_t bufsiz) {
+    // Satisfy sysfs bus traversal checks
+    if (pathname && (strstr(pathname, "81:0") || strstr(pathname, "video0"))) {
+        const char *mock_link = "../../../devices/virtual/video4linux/video0";
+        size_t len = strlen(mock_link);
+        if (len > bufsiz) len = bufsiz;
+        memcpy(buf, mock_link, len);
+        return len;
+    }
+
+    if (!real_readlink) real_readlink = dlsym(RTLD_NEXT, "readlink");
+    return real_readlink ? real_readlink(pathname, buf, bufsiz) : -1;
+}
+
+FILE *fopen(const char *pathname, const char *mode) {
+    if (pathname && (strstr(pathname, "81:0") || strstr(pathname, "video0"))) {
+        int fd = open(pathname, 0);
+        if (fd >= 0) return fdopen(fd, mode);
+    }
+
+    if (!real_fopen) real_fopen = dlsym(RTLD_NEXT, "fopen");
+    return real_fopen ? real_fopen(pathname, mode) : NULL;
+}
+
+FILE *fopen64(const char *pathname, const char *mode) {
+    if (pathname && (strstr(pathname, "81:0") || strstr(pathname, "video0"))) {
+        int fd = open64(pathname, 0);
+        if (fd >= 0) return fdopen(fd, mode);
+    }
+
+    if (!real_fopen64) real_fopen64 = dlsym(RTLD_NEXT, "fopen64");
+    return real_fopen64 ? real_fopen64(pathname, mode) : NULL;
+}
 
 int close(int fd) {
     init_pointers();
@@ -361,7 +415,20 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
     return real_mmap ? real_mmap(addr, length, prot, flags, fd, offset) : MAP_FAILED;
 }
 
-int ioctl(int fd, int request, ...) {
+void *mmap64(void *addr, size_t length, int prot, int flags, int fd, off64_t offset) {
+    init_pointers();
+    if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
+        int index = (int)(offset / 0x1000000);
+        if (index >= 0 && index < 16 && g_shim_memfds[index] >= 0) {
+            if (real_mmap64) return real_mmap64(addr, length, prot, flags, g_shim_memfds[index], 0);
+            return real_mmap ? real_mmap(addr, length, prot, flags, g_shim_memfds[index], 0) : MAP_FAILED;
+        }
+    }
+    if (real_mmap64) return real_mmap64(addr, length, prot, flags, fd, offset);
+    return real_mmap ? real_mmap(addr, length, prot, flags, fd, (off_t)offset) : MAP_FAILED;
+}
+
+int ioctl(int fd, ioctl_req_t request, ...) {
     init_pointers();
     va_list args;
     va_start(args, request);
@@ -369,7 +436,7 @@ int ioctl(int fd, int request, ...) {
     va_end(args);
 
     if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
-        return shim_v4l2_handle_ioctl(fd, request, arg);
+        return shim_v4l2_handle_ioctl(fd, (int)request, arg);
     }
     
     return real_ioctl ? real_ioctl(fd, request, arg) : -1;

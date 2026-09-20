@@ -11,11 +11,11 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <string.h>
-#include <android/log.h>
 #include "shim/internal.h"
+#include "shim/log.h"
 #include "vsouchi_ipc.h"
 
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "vSouchi:ShimIPC", __VA_ARGS__)
+#define LOGI(...) SHIM_LOGI("vSouchi:ShimIPC", __VA_ARGS__)
 
 pthread_mutex_t g_ipc_mutex = PTHREAD_MUTEX_INITIALIZER;
 

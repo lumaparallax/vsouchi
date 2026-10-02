@@ -10,41 +10,58 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import androidx.core.content.ContextCompat;
 import io.github.lumaparallax.vsouchi.v4l2.CameraEngine;
 import io.github.lumaparallax.vsouchi.v4l2.CameraHardwareManager;
 import io.github.lumaparallax.vsouchi.v4l2.NativeBridge;
 
 public class ForegroundService extends Service {
     private static final String TAG = "vSouchi:Service";
+    private static final String CHANNEL_ID = "vsouchi_ipc_channel";
+    private static final int NOTIFICATION_ID = 4040;
     private NativeBridge nativeBridge;
     private CameraEngine cameraEngine;
-    private CameraHardwareManager hardwareManager;
+    private CameraHardwareManager hardwareManager; 
 
     @Override
     public void onCreate() {
         super.onCreate();
         
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel("vsouchi_chan", "vSouchi IPC", NotificationManager.IMPORTANCE_LOW);
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) manager.createNotificationChannel(channel);
-            
-            Notification notification = new Notification.Builder(this, "vsouchi_chan")
-                    .setContentTitle("vSouchi Active")
-                    .setContentText("Background IPC running")
-                    .setSmallIcon(android.R.drawable.ic_menu_info_details)
-                    .build();
-            try {
-                if (Build.VERSION.SDK_INT >= 29) { 
-                    startForeground(4040, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
-                } else {
-                    startForeground(4040, notification);
-                }
-            } catch (Exception e) {
-                Logger.e(TAG, "startForeground denied. Running as background service.", e);
+        NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "vSouchi IPC Service",
+                NotificationManager.IMPORTANCE_LOW
+        );
+        channel.setDescription("Maintains background V4L2 device streaming and IPC routing");
+        
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager != null) manager.createNotificationChannel(channel);
+        
+        int badgeColor = ContextCompat.getColor(this, R.color.notification_background);
+
+        Notification notification = new Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle("vSouchi Active")
+                .setContentText("V4L2 virtualization pipeline running")
+                .setSmallIcon(R.drawable.ic_notification)
+                .setColor(badgeColor)
+                .setOngoing(true)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .setShowWhen(false)
+                .build();
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { 
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
             }
+        } catch (Exception e) {
+            Logger.e(TAG, "Fatal: startForeground denied", e);
+            stopSelf();
+            return;
         }
         
         nativeBridge = new NativeBridge();

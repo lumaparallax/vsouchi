@@ -28,6 +28,31 @@ typedef struct {
     uint32_t max_fps;
 } ResolutionMap;
 
+#define MAX_CAMERAS 16
+
+typedef struct {
+    char name[32];
+    char camera_id[16];
+    char bus_info[32];
+    FormatMap supported_formats[32];
+    int supported_format_count;
+    ResolutionMap resolutions[256];
+    int res_count;
+    int cfa_pattern;
+    int has_focus;
+    float min_focus_dist;
+    int has_exposure;
+    long min_exposure;
+    long max_exposure;
+    int orientation;
+    int hflip;
+} CameraProfile;
+
+extern CameraProfile g_cameras[MAX_CAMERAS];
+extern int g_camera_count;
+extern int g_active_camera_idx;
+extern char g_device_name[32];
+extern char g_bus_info[32];
 extern FormatMap g_supported_formats[32];
 extern int g_supported_format_count;
 

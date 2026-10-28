@@ -35,6 +35,7 @@ public class CameraEngine {
     private int activeHeight = 0;
     private int activeFps = 30;
     private int activeFormat = ImageFormat.YUV_420_888;
+    private int targetCameraIndex = 0;
 
     public CameraEngine(Context context, NativeBridge bridge) {
         this.context = context;
@@ -44,6 +45,28 @@ public class CameraEngine {
 
     public void setMaxFocusDiopters(float maxDiopters) {
         sessionController.setMaxFocusDiopters(maxDiopters);
+    }
+
+    public synchronized void switchCamera(int index) {
+        if (targetCameraIndex == index) return;
+        targetCameraIndex = index;
+
+        /* Enforce sequential teardown before booting the next lens to avoid ISP lockups */
+        if (captureSession != null) {
+            try { captureSession.stopRepeating(); captureSession.abortCaptures(); } catch (Exception ignored) {}
+            try { captureSession.close(); } catch (Exception ignored) {}
+            captureSession = null;
+        }
+        if (cameraDevice != null) {
+            cameraDevice.close();
+            cameraDevice = null;
+        }
+
+        bridge.nativeDestroyImageReader();
+        activeSurface = null;
+        activeWidth = 0;
+        activeHeight = 0;
+        isCameraBooting = false;
     }
 
     @SuppressLint("MissingPermission")
@@ -100,8 +123,19 @@ public class CameraEngine {
             isCameraBooting = true;
             try {
                 CameraManager manager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
-                String cid = manager.getCameraIdList()[0];
-                
+                String[] ids = manager.getCameraIdList();
+                String cid = (targetCameraIndex >= 0 && targetCameraIndex < ids.length)
+                        ? ids[targetCameraIndex]
+                        : ids[0];
+
+                try {
+                    CameraCharacteristics chars = manager.getCameraCharacteristics(cid);
+                    Float minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+                    if (minFocus != null && minFocus > 0.0f) {
+                        setMaxFocusDiopters(minFocus);
+                    }
+                } catch (Exception ignored) {}
+
                 manager.openCamera(cid, new CameraDevice.StateCallback() {
                     @Override
                     public void onOpened(CameraDevice camera) {

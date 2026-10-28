@@ -52,121 +52,122 @@ public class CameraHardwareManager {
     public void probeAndPushCapabilities() {
         try {
             CameraManager manager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
-            String cameraId = manager.getCameraIdList()[0];
-            CameraCharacteristics chars = manager.getCameraCharacteristics(cameraId);
+            String[] cameraIds = manager.getCameraIdList();
+            bridge.nativeClearCameras();
 
-            Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
-            String role = resolveCameraRole(chars, facing);
+            for (int i = 0; i < cameraIds.length; i++) {
+                String cameraId = cameraIds[i];
+                CameraCharacteristics chars = manager.getCameraCharacteristics(cameraId);
 
-            int megapixels = 0;
-            Size pixelArray = chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE);
-            if (pixelArray != null) {
-                megapixels = (int) Math.round((pixelArray.getWidth() * (double) pixelArray.getHeight()) / 1_000_000.0);
-            }
+                Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
+                String role = resolveCameraRole(chars, facing);
 
-            String rawMfr = Build.MANUFACTURER;
-            String brand = rawMfr.substring(0, 1).toUpperCase() + rawMfr.substring(1);
+                int megapixels = 0;
+                Size pixelArray = chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE);
+                if (pixelArray != null) {
+                    megapixels = (int) Math.round((pixelArray.getWidth() * (double) pixelArray.getHeight()) / 1_000_000.0);
+                }
 
-            String deviceName;
-            if (megapixels > 0) {
-                deviceName = brand + " " + role + " (" + megapixels + "MP)";
-            } else {
-                deviceName = brand + " " + role;
-            }
+                String rawMfr = Build.MANUFACTURER;
+                String brand = (rawMfr != null && !rawMfr.isEmpty())
+                        ? rawMfr.substring(0, 1).toUpperCase() + rawMfr.substring(1)
+                        : "Android";
 
-            if (deviceName.length() > 31) {
-                deviceName = deviceName.substring(0, 31);
-            }
+                String deviceName;
+                if (megapixels > 0) {
+                    deviceName = brand + " " + role + " (" + megapixels + "MP)";
+                } else {
+                    deviceName = brand + " " + role;
+                }
 
-            bridge.nativeSetDeviceInfo(deviceName, cameraId);
+                if (deviceName.length() > 31) {
+                    deviceName = deviceName.substring(0, 31);
+                }
 
-            StreamConfigurationMap map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                StreamConfigurationMap map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if (map == null) continue;
 
-            if (map != null) {
                 int[] rawFormats = map.getOutputFormats();
+                if (rawFormats == null || rawFormats.length == 0) continue;
+
+                /* Filter to formats supported by the native V4L2 bridge and prioritize YUV_420_888
+                 * so unsupported formats (e.g. PRIVATE, DEPTH16, HEIC) do not exhaust the 256-entry table.*/
                 boolean hasYuv = false;
                 boolean hasJpeg = false;
                 boolean hasRaw = false;
-                if (rawFormats != null) {
-                    /* Filter to formats supported by the native V4L2 bridge and prioritize YUV_420_888
-                     * so unsupported formats (e.g. PRIVATE, DEPTH16, HEIC) do not exhaust the 256-entry table.*/
-                    for (int fmt : rawFormats) {
-                        if (fmt == ImageFormat.YUV_420_888) hasYuv = true;
-                        else if (fmt == ImageFormat.JPEG) hasJpeg = true;
-                        else if (fmt == ImageFormat.RAW_SENSOR) hasRaw = true;
-                    }
+                for (int fmt : rawFormats) {
+                    if (fmt == ImageFormat.YUV_420_888) hasYuv = true;
+                    else if (fmt == ImageFormat.JPEG) hasJpeg = true;
+                    else if (fmt == ImageFormat.RAW_SENSOR) hasRaw = true;
                 }
 
                 int supportedCount = (hasYuv ? 1 : 0) + (hasJpeg ? 1 : 0) + (hasRaw ? 1 : 0);
-                if (supportedCount > 0) {
-                    int[] formats = new int[supportedCount];
-                    int fmtIdx = 0;
-                    if (hasYuv) formats[fmtIdx++] = ImageFormat.YUV_420_888;
-                    if (hasJpeg) formats[fmtIdx++] = ImageFormat.JPEG;
-                    if (hasRaw) formats[fmtIdx++] = ImageFormat.RAW_SENSOR;
+                if (supportedCount == 0) continue;
 
-                    Integer cfa = chars.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT);
-                    bridge.nativeSetCfaPattern(cfa != null ? cfa : 0);
-                    bridge.nativeSetFormats(formats);
+                int[] formats = new int[supportedCount];
+                int fmtIdx = 0;
+                if (hasYuv) formats[fmtIdx++] = ImageFormat.YUV_420_888;
+                if (hasJpeg) formats[fmtIdx++] = ImageFormat.JPEG;
+                if (hasRaw) formats[fmtIdx++] = ImageFormat.RAW_SENSOR;
 
-                    int totalResCount = 0;
-                    for (int fmt : formats) {
-                        Size[] sizes = map.getOutputSizes(fmt);
-                        if (sizes != null) totalResCount += sizes.length;
-                    }
+                Integer cfa = chars.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT);
+                int cfaVal = (cfa != null) ? cfa : 0;
 
-                    int[] resFmts = new int[totalResCount];
-                    int[] resWs = new int[totalResCount];
-                    int[] resHs = new int[totalResCount];
-                    int[] resFps = new int[totalResCount];
+                int totalResCount = 0;
+                for (int fmt : formats) {
+                    Size[] sizes = map.getOutputSizes(fmt);
+                    if (sizes != null) totalResCount += sizes.length;
+                }
 
-                    int idx = 0;
-                    for (int fmt : formats) {
-                        Size[] sizes = map.getOutputSizes(fmt);
-                        if (sizes != null) {
-                            for (Size s : sizes) {
-                                resFmts[idx] = fmt;
-                                resWs[idx] = s.getWidth();
-                                resHs[idx] = s.getHeight();
+                int[] resFmts = new int[totalResCount];
+                int[] resWs = new int[totalResCount];
+                int[] resHs = new int[totalResCount];
+                int[] resFps = new int[totalResCount];
 
-                                long minFrameDuration = map.getOutputMinFrameDuration(fmt, s);
-                                if (minFrameDuration > 0) {
-                                    resFps[idx] = (int) Math.round(1_000_000_000.0 / minFrameDuration);
-                                } else {
-                                    resFps[idx] = 30;
-                                }
-                                idx++;
+                int idx = 0;
+                for (int fmt : formats) {
+                    Size[] sizes = map.getOutputSizes(fmt);
+                    if (sizes != null) {
+                        for (Size s : sizes) {
+                            resFmts[idx] = fmt;
+                            resWs[idx] = s.getWidth();
+                            resHs[idx] = s.getHeight();
+
+                            long minFrameDuration = map.getOutputMinFrameDuration(fmt, s);
+                            if (minFrameDuration > 0) {
+                                resFps[idx] = (int) Math.round(1_000_000_000.0 / minFrameDuration);
+                            } else {
+                                resFps[idx] = 30;
                             }
+                            idx++;
                         }
                     }
-
-                    bridge.nativeSetResolutions(resFmts, resWs, resHs, resFps);
-                    Logger.i(TAG, "Pushed " + totalResCount + " format-aware resolutions to Native Cache.");
-
-                    Float minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
-                    boolean hasFocus = (minFocus != null && minFocus > 0.0f);
-                    float focusMaxVal = hasFocus ? minFocus : 0.0f;
-
-                    if (cameraEngine != null && hasFocus) {
-                        cameraEngine.setMaxFocusDiopters(focusMaxVal);
-                    }
-
-                    android.util.Range<Long> expRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
-                    boolean hasExposure = (expRange != null);
-                    long minExp = hasExposure ? expRange.getLower() : 0;
-                    long maxExp = hasExposure ? expRange.getUpper() : 0;
-
-                    Integer sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
-                    int orientation = (sensorOrientation != null) ? sensorOrientation : 0;
-                    int hflip = (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) ? 1 : 0;
-
-                    bridge.nativeSetCameraCaps(hasFocus, focusMaxVal, hasExposure, minExp, maxExp, orientation, hflip);
-                    Logger.i(TAG, "Hardware Caps pushed to C-Bridge on boot.");
                 }
-            }
 
+                Float minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+                boolean hasFocus = (minFocus != null && minFocus > 0.0f);
+                float focusMaxVal = hasFocus ? minFocus : 0.0f;
+
+                /* Default diopters to primary boot sensor (camera 0) */
+                if (i == 0 && cameraEngine != null && hasFocus) {
+                    cameraEngine.setMaxFocusDiopters(focusMaxVal);
+                }
+
+                android.util.Range<Long> expRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+                boolean hasExposure = (expRange != null);
+                long minExp = hasExposure ? expRange.getLower() : 0;
+                long maxExp = hasExposure ? expRange.getUpper() : 0;
+
+                Integer sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
+                int orientation = (sensorOrientation != null) ? sensorOrientation : 0;
+                int hflip = (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) ? 1 : 0;
+
+                bridge.nativeAddCamera(i, deviceName, cameraId, formats, resFmts, resWs, resHs, resFps,
+                        cfaVal, hasFocus, focusMaxVal, hasExposure, minExp, maxExp, orientation, hflip);
+                Logger.i(TAG, "Registered camera [" + i + "]: " + deviceName + " (ID " + cameraId + ")");
+            }
         } catch (Exception e) {
-            Logger.e(TAG, "Failed to get camera resolutions", e);
+            Logger.e(TAG, "Failed to probe camera capabilities", e);
         }
     }
 }

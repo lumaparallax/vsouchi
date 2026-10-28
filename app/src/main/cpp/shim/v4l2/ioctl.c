@@ -287,23 +287,50 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
     if (req_clean == (uint32_t)VIDIOC_ENUMINPUT) {
         CHECK_ARG();
         struct v4l2_input *inp = (struct v4l2_input *)arg;
-        if (inp->index > 0) { errno = EINVAL; return -1; }
 
-        IpcV4l2Caps ipc_caps;
-        if (shim_ipc_transaction(CMD_GET_CAPS, NULL, 0, &ipc_caps, sizeof(IpcV4l2Caps)) != 0) return -1;
+        IpcV4l2Input ipc_req;
+        memset(&ipc_req, 0, sizeof(ipc_req));
+        ipc_req.index = inp->index;
+
+        IpcV4l2Input ipc_reply;
+        if (shim_ipc_transaction(CMD_ENUM_INPUT, &ipc_req, sizeof(ipc_req), &ipc_reply, sizeof(ipc_reply)) != 0) {
+            return -1;
+        }
 
         memset(inp, 0, sizeof(*inp));
-        inp->index = 0;
-        strncpy((char *)inp->name, ipc_caps.card, sizeof(inp->name) - 1);
-        inp->type = V4L2_INPUT_TYPE_CAMERA;
+        inp->index = ipc_reply.index;
+        strncpy((char *)inp->name, ipc_reply.name, sizeof(inp->name) - 1);
+        inp->type = ipc_reply.type;
         return 0;
     }
 
-    if (req_clean == (uint32_t)VIDIOC_G_INPUT || req_clean == (uint32_t)VIDIOC_S_INPUT) {
+    if (req_clean == (uint32_t)VIDIOC_G_INPUT) {
         CHECK_ARG();
         int *index = (int *)arg;
-        if (req_clean == (uint32_t)VIDIOC_S_INPUT && *index != 0) { errno = EINVAL; return -1; }
-        *index = 0;
+
+        uint32_t active_idx = 0;
+        if (shim_ipc_transaction(CMD_G_INPUT, NULL, 0, &active_idx, sizeof(uint32_t)) != 0) {
+            return -1;
+        }
+
+        *index = (int)active_idx;
+        return 0;
+    }
+
+    if (req_clean == (uint32_t)VIDIOC_S_INPUT) {
+        CHECK_ARG();
+        int *index = (int *)arg;
+        if (*index < 0) {
+            errno = EINVAL;
+            return -1;
+        }
+
+        uint32_t target_idx = (uint32_t)*index;
+        int32_t ack = 0;
+        if (shim_ipc_transaction(CMD_S_INPUT, &target_idx, sizeof(uint32_t), &ack, sizeof(int32_t)) != 0) {
+            return -1;
+        }
+
         return 0;
     }
 

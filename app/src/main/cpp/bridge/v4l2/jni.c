@@ -23,8 +23,8 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "vSouchi:BridgeJNI", __VA_ARGS__)
 
 static int g_socket_fd = -1;
-static char g_device_name[32] = "vSouchi Virtual Camera";
 static uint32_t g_kernel_version = 0;
+char g_device_name[32] = "vSouchi Virtual Camera";
 char g_bus_info[32] = "platform:vsouchi-cam0";
 
 int g_has_focus = 0;
@@ -49,6 +49,7 @@ static jmethodID method_onStreamOn = NULL;
 static jmethodID method_onStreamOff = NULL;
 static jmethodID method_onDisconnect = NULL;
 static jmethodID method_onSetControl = NULL;
+static jmethodID method_onSelectInput = NULL;
 
 static uint32_t get_real_kernel_version() {
     struct utsname un;
@@ -66,53 +67,41 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     return JNI_VERSION_1_6;
 }
 
-JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetDeviceInfo(JNIEnv *env, jobject thiz, jstring deviceName, jstring cameraId) {
-    const char *nativeString = (*env)->GetStringUTFChars(env, deviceName, 0);
-    snprintf(g_device_name, sizeof(g_device_name), "%s", nativeString);
-    (*env)->ReleaseStringUTFChars(env, deviceName, nativeString);
-
-    const char *cidStr = (*env)->GetStringUTFChars(env, cameraId, 0);
-    snprintf(g_bus_info, sizeof(g_bus_info), "platform:vsouchi-cam%s", cidStr);
-    (*env)->ReleaseStringUTFChars(env, cameraId, cidStr);
+JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeClearCameras(JNIEnv *env, jobject thiz) {
+    v4l2_clear_cameras();
 }
 
-JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetResolutions(JNIEnv *env, jobject thiz, jintArray formats, jintArray widths, jintArray heights, jintArray fps) {
-    jsize len = (*env)->GetArrayLength(env, widths);
-    jint *f = (*env)->GetIntArrayElements(env, formats, 0);
-    jint *w = (*env)->GetIntArrayElements(env, widths, 0);
-    jint *h = (*env)->GetIntArrayElements(env, heights, 0);
-    jint *r = (*env)->GetIntArrayElements(env, fps, 0);
+JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeAddCamera(
+        JNIEnv *env, jobject thiz, jint index, jstring deviceName, jstring cameraId,
+        jintArray formats, jintArray resFormats, jintArray resWs, jintArray resHs, jintArray resFps,
+        jint cfa, jboolean hasFocus, jfloat minFocus, jboolean hasExposure,
+        jlong minExposure, jlong maxExposure, jint orientation, jint hflip) {
 
-    v4l2_init_resolutions((int*)f, (int*)w, (int*)h, (int*)r, (int)len);
+    const char *nameStr = (*env)->GetStringUTFChars(env, deviceName, 0);
+    const char *idStr = (*env)->GetStringUTFChars(env, cameraId, 0);
 
-    (*env)->ReleaseIntArrayElements(env, formats, f, JNI_ABORT);
-    (*env)->ReleaseIntArrayElements(env, widths, w, JNI_ABORT);
-    (*env)->ReleaseIntArrayElements(env, heights, h, JNI_ABORT);
-    (*env)->ReleaseIntArrayElements(env, fps, r, JNI_ABORT);
-}
+    jsize fmtLen = (*env)->GetArrayLength(env, formats);
+    jint *fmtBody = (*env)->GetIntArrayElements(env, formats, 0);
 
-JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetCfaPattern(JNIEnv *env, jobject thiz, jint cfa) {
-    v4l2_set_cfa_pattern((int)cfa);
-}
+    jsize resLen = (*env)->GetArrayLength(env, resWs);
+    jint *rf = (*env)->GetIntArrayElements(env, resFormats, 0);
+    jint *rw = (*env)->GetIntArrayElements(env, resWs, 0);
+    jint *rh = (*env)->GetIntArrayElements(env, resHs, 0);
+    jint *rr = (*env)->GetIntArrayElements(env, resFps, 0);
 
-JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetFormats(JNIEnv *env, jobject thiz, jintArray formats) {
-    jsize len = (*env)->GetArrayLength(env, formats);
-    jint *body = (*env)->GetIntArrayElements(env, formats, 0);
-    v4l2_init_formats((int*)body, (int)len);
-    (*env)->ReleaseIntArrayElements(env, formats, body, JNI_ABORT);
-}
+    v4l2_add_camera((int)index, nameStr, idStr,
+                    (int*)fmtBody, (int)fmtLen,
+                    (int*)rf, (int*)rw, (int*)rh, (int*)rr, (int)resLen,
+                    (int)cfa, (int)hasFocus, (float)minFocus, (int)hasExposure,
+                    (long)minExposure, (long)maxExposure, (int)orientation, (int)hflip);
 
-JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetCameraCaps(JNIEnv *env, jobject thiz, jboolean has_focus, jfloat min_focus, jboolean has_exp, jlong min_exp, jlong max_exp, jint orientation, jint hflip) {
-    g_has_focus = has_focus;
-    g_min_focus_dist = min_focus;
-    g_has_exposure = has_exp;
-    g_min_exposure = min_exp;
-    g_max_exposure = max_exp;
-    g_sensor_orientation = orientation;
-    g_sensor_hflip = hflip;
-    g_sensor_vflip = 0;
-    LOGI("Hardware Caps Cached -> Focus: %d (Max: %f), Exposure: %d, Orientation: %d, HFlip: %d", 
-         g_has_focus, g_min_focus_dist, g_has_exposure, g_sensor_orientation, g_sensor_hflip);
+    (*env)->ReleaseIntArrayElements(env, formats, fmtBody, JNI_ABORT);
+    (*env)->ReleaseIntArrayElements(env, resFormats, rf, JNI_ABORT);
+    (*env)->ReleaseIntArrayElements(env, resWs, rw, JNI_ABORT);
+    (*env)->ReleaseIntArrayElements(env, resHs, rh, JNI_ABORT);
+    (*env)->ReleaseIntArrayElements(env, resFps, rr, JNI_ABORT);
+    (*env)->ReleaseStringUTFChars(env, deviceName, nameStr);
+    (*env)->ReleaseStringUTFChars(env, cameraId, idStr);
 }
 
 JNIEXPORT jboolean JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeConnect(JNIEnv *env, jobject thiz, jint uds_fd) {
@@ -127,6 +116,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
     method_onStreamOff = (*env)->GetMethodID(env, clazz, "onStreamOff", "()V");
     method_onDisconnect = (*env)->GetMethodID(env, clazz, "onDisconnect", "()V");
     method_onSetControl = (*env)->GetMethodID(env, clazz, "onSetControl", "(II)V");
+    method_onSelectInput = (*env)->GetMethodID(env, clazz, "onSelectInput", "(I)V");
 
     if (g_kernel_version == 0) {
         g_kernel_version = get_real_kernel_version();
@@ -161,6 +151,9 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
             (*env)->CallVoidMethod(env, thiz, method_onDisconnect);
         } else if (signal == 4) { 
             (*env)->CallVoidMethod(env, thiz, method_onSetControl, g_last_ctrl_id, g_last_ctrl_val);
+        } else if (signal == 5) {
+            (*env)->CallVoidMethod(env, thiz, method_onSelectInput, g_active_camera_idx);
         }
+
     }
 }

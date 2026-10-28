@@ -10,10 +10,11 @@ import android.view.Surface;
 public class NativeBridge {
     static { System.loadLibrary("vsouchi_bridge"); }
 
-    public native void nativeSetDeviceInfo(String deviceName, String cameraId);
-    public native void nativeSetResolutions(int[] formats, int[] widths, int[] heights, int[] fps);
-    public native void nativeSetCfaPattern(int cfa);
-    public native void nativeSetFormats(int[] formats);
+    public native void nativeClearCameras();
+    public native void nativeAddCamera(int index, String deviceName, String cameraId,
+                                      int[] formats, int[] resFormats, int[] resWs, int[] resHs, int[] resFps,
+                                      int cfa, boolean hasFocus, float minFocus, boolean hasExposure,
+                                      long minExposure, long maxExposure, int orientation, int hflip);
     public native boolean nativeConnect(int udsFd);
     public native void nativeStartLoop(int socketFd);
 
@@ -26,11 +27,16 @@ public class NativeBridge {
         this.cameraEngine = engine;
     }
 
-    public native void nativeSetCameraCaps(boolean hasFocus, float minFocus, boolean hasExposure, long minExposure, long maxExposure, int orientation, int hflip);
-
     public void onSetControl(int controlId, int value) {
         if (cameraEngine != null) {
             cameraEngine.applyControl(controlId, value);
+        }
+    }
+
+    /* Dispatched by Bridge C-core when userspace calls VIDIOC_S_INPUT */
+    public void onSelectInput(int index) {
+        if (cameraEngine != null) {
+            cameraEngine.switchCamera(index);
         }
     }
 

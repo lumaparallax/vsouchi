@@ -32,6 +32,9 @@
 #define CMD_G_PARM     0x1F
 #define CMD_S_PARM     0x20
 #define CMD_POLL       0x21
+#define CMD_ENUM_INPUT 0x22
+#define CMD_G_INPUT    0x23
+#define CMD_S_INPUT    0x24
 
 #define CMD_QUERYCTRL  0x30
 #define CMD_G_CTRL     0x31
@@ -62,6 +65,12 @@ typedef struct {
     uint32_t pixelformat;
     uint32_t reserved[4];
 } IpcV4l2FmtDesc;
+
+typedef struct {
+    uint32_t index;
+    char name[32];
+    uint32_t type;
+} IpcV4l2Input;
 
 typedef struct {
     uint32_t width;

@@ -47,6 +47,15 @@ static FormatMap kMasterFormats[] = {
     { V4L2_PIX_FMT_SRGGB16,            "16-bit Bayer RGRG/GBGB",     32,  0 }
 };
 
+CameraProfile g_cameras[MAX_CAMERAS];
+int g_camera_count = 0;
+int g_active_camera_idx = 0;
+
+extern int g_has_focus, g_has_exposure;
+extern float g_min_focus_dist;
+extern long g_min_exposure, g_max_exposure;
+extern int g_sensor_orientation, g_sensor_hflip, g_sensor_vflip;
+
 #define MASTER_FORMAT_COUNT (sizeof(kMasterFormats) / sizeof(kMasterFormats[0]))
 
 FormatMap g_supported_formats[32];
@@ -127,70 +136,42 @@ uint32_t get_max_fps_for_res(uint32_t w, uint32_t h) {
     return 30; 
 }
 
-void v4l2_set_cfa_pattern(int cfa) {
-    uint32_t fourcc = V4L2_PIX_FMT_SRGGB16;
-    const char *desc = "16-bit Bayer RGRG/GBGB";
-
-    switch (cfa) {
-        case 1:
-            fourcc = v4l2_fourcc('G', 'R', '1', '6');
-            desc = "16-bit Bayer GRGR/BGBG";
-            break;
-        case 2:
-            fourcc = v4l2_fourcc('G', 'B', '1', '6');
-            desc = "16-bit Bayer GBGB/RGRG";
-            break;
-        case 3:
-            fourcc = v4l2_fourcc('B', 'G', '1', '6');
-            desc = "16-bit Bayer BGBG/GRGR";
-            break;
-        case 0:
-        default:
-            fourcc = v4l2_fourcc('R', 'G', '1', '6');
-            desc = "16-bit Bayer RGRG/GBGB";
-            break;
-    }
-
-    for (size_t i = 0; i < MASTER_FORMAT_COUNT; ++i) {
-        if (kMasterFormats[i].android_format == 32) {
-            kMasterFormats[i].pixelformat = fourcc;
-            snprintf(kMasterFormats[i].description, sizeof(kMasterFormats[i].description), "%s", desc);
-            break;
-        }
-    }
+void v4l2_clear_cameras(void) {
+    pthread_mutex_lock(&g_v4l2_mutex);
+    g_camera_count = 0;
+    g_active_camera_idx = 0;
+    pthread_mutex_unlock(&g_v4l2_mutex);
 }
 
-void v4l2_init_formats(int *android_formats, int count) {
-    g_supported_format_count = 0;
-
-    for (size_t m = 0; m < MASTER_FORMAT_COUNT; ++m) {
-        int req_android_fmt = kMasterFormats[m].android_format;
-        int is_supported = 0;
-
-        for (int i = 0; i < count; ++i) {
-            if (android_formats[i] == req_android_fmt) {
-                is_supported = 1;
-                break;
-            }
-        }
-
-        if (is_supported && g_supported_format_count < 32) {
-            g_supported_formats[g_supported_format_count++] = kMasterFormats[m];
-        }
-    }
-}
-
-void v4l2_init_resolutions(int* formats, int* widths, int* heights, int* fps, int count) {
-    if (count <= 0) return;
-
-    g_res_count = (count > 256) ? 256 : count;
-    for (int i = 0; i < g_res_count; i++) {
-        g_resolutions[i].android_format = formats[i];
-        g_resolutions[i].width = (uint32_t)widths[i];
-        g_resolutions[i].height = (uint32_t)heights[i];
-        g_resolutions[i].max_fps = (uint32_t)fps[i];
+int v4l2_switch_camera(int index) {
+    pthread_mutex_lock(&g_v4l2_mutex);
+    if (index < 0 || index >= g_camera_count) {
+        pthread_mutex_unlock(&g_v4l2_mutex);
+        return -1;
     }
 
+    g_active_camera_idx = index;
+    CameraProfile *cam = &g_cameras[index];
+
+    snprintf(g_device_name, sizeof(g_device_name), "%s", cam->name);
+    snprintf(g_bus_info, sizeof(g_bus_info), "%s", cam->bus_info);
+
+    g_supported_format_count = cam->supported_format_count;
+    memcpy(g_supported_formats, cam->supported_formats, sizeof(FormatMap) * cam->supported_format_count);
+
+    g_res_count = cam->res_count;
+    memcpy(g_resolutions, cam->resolutions, sizeof(ResolutionMap) * cam->res_count);
+
+    g_has_focus = cam->has_focus;
+    g_min_focus_dist = cam->min_focus_dist;
+    g_has_exposure = cam->has_exposure;
+    g_min_exposure = cam->min_exposure;
+    g_max_exposure = cam->max_exposure;
+    g_sensor_orientation = cam->orientation;
+    g_sensor_hflip = cam->hflip;
+    g_sensor_vflip = 0;
+
+    /* Re-negotiate default resolution for the selected sensor */
     if (g_supported_format_count > 0) {
         g_current_format = g_supported_formats[0].pixelformat;
         g_current_android_format = g_supported_formats[0].android_format;
@@ -199,7 +180,6 @@ void v4l2_init_resolutions(int* formats, int* widths, int* heights, int* fps, in
         g_current_android_format = 35;
     }
 
-    // Default boot to 1080p, then 720p, else first valid resolution
     int target_idx = -1;
     for (int i = 0; i < g_res_count; ++i) {
         if (g_resolutions[i].android_format == g_current_android_format &&
@@ -208,7 +188,6 @@ void v4l2_init_resolutions(int* formats, int* widths, int* heights, int* fps, in
             break;
         }
     }
-
     if (target_idx == -1) {
         for (int i = 0; i < g_res_count; ++i) {
             if (g_resolutions[i].android_format == g_current_android_format &&
@@ -218,7 +197,6 @@ void v4l2_init_resolutions(int* formats, int* widths, int* heights, int* fps, in
             }
         }
     }
-
     if (target_idx == -1) {
         for (int i = 0; i < g_res_count; ++i) {
             if (g_resolutions[i].android_format == g_current_android_format) {
@@ -227,13 +205,89 @@ void v4l2_init_resolutions(int* formats, int* widths, int* heights, int* fps, in
             }
         }
     }
-
     if (target_idx == -1) target_idx = 0;
 
-    g_current_width = g_resolutions[target_idx].width;
-    g_current_height = g_resolutions[target_idx].height;
-    g_current_fps = get_max_fps_for_res(g_current_width, g_current_height);
+    if (g_res_count > 0) {
+        g_current_width = g_resolutions[target_idx].width;
+        g_current_height = g_resolutions[target_idx].height;
+        g_current_fps = get_max_fps_for_res(g_current_width, g_current_height);
+    }
+
+    pthread_mutex_unlock(&g_v4l2_mutex);
+    return 0;
 }
+
+void v4l2_add_camera(int index, const char* name, const char* id,
+                     int* formats, int fmt_count,
+                     int* res_fmts, int* res_ws, int* res_hs, int* res_fps, int res_count,
+                     int cfa, int has_focus, float min_focus, int has_exp,
+                     long min_exp, long max_exp, int orientation, int hflip) {
+    if (index < 0 || index >= MAX_CAMERAS) return;
+
+    pthread_mutex_lock(&g_v4l2_mutex);
+    CameraProfile *cam = &g_cameras[index];
+    memset(cam, 0, sizeof(CameraProfile));
+
+    snprintf(cam->name, sizeof(cam->name), "%s", name);
+    snprintf(cam->camera_id, sizeof(cam->camera_id), "%s", id);
+    snprintf(cam->bus_info, sizeof(cam->bus_info), "platform:vsouchi-cam%s", id);
+
+    uint32_t bayer_fourcc = V4L2_PIX_FMT_SRGGB16;
+    const char *bayer_desc = "16-bit Bayer RGRG/GBGB";
+    if (cfa == 1) { bayer_fourcc = v4l2_fourcc('G', 'R', '1', '6'); bayer_desc = "16-bit Bayer GRGR/BGBG"; }
+    else if (cfa == 2) { bayer_fourcc = v4l2_fourcc('G', 'B', '1', '6'); bayer_desc = "16-bit Bayer GBGB/RGRG"; }
+    else if (cfa == 3) { bayer_fourcc = v4l2_fourcc('B', 'G', '1', '6'); bayer_desc = "16-bit Bayer BGBG/GRGR"; }
+
+    cam->supported_format_count = 0;
+    for (size_t m = 0; m < MASTER_FORMAT_COUNT; ++m) {
+        int req_android_fmt = kMasterFormats[m].android_format;
+        int is_supported = 0;
+
+        for (int i = 0; i < fmt_count; ++i) {
+            if (formats[i] == req_android_fmt) {
+                is_supported = 1;
+                break;
+            }
+        }
+
+        if (is_supported && cam->supported_format_count < 32) {
+            FormatMap fmt = kMasterFormats[m];
+            if (req_android_fmt == 32) {
+                fmt.pixelformat = bayer_fourcc;
+                snprintf(fmt.description, sizeof(fmt.description), "%s", bayer_desc);
+            }
+            cam->supported_formats[cam->supported_format_count++] = fmt;
+        }
+    }
+
+    cam->res_count = (res_count > 256) ? 256 : res_count;
+    for (int i = 0; i < cam->res_count; i++) {
+        cam->resolutions[i].android_format = res_fmts[i];
+        cam->resolutions[i].width = (uint32_t)res_ws[i];
+        cam->resolutions[i].height = (uint32_t)res_hs[i];
+        cam->resolutions[i].max_fps = (uint32_t)res_fps[i];
+    }
+
+    cam->cfa_pattern = cfa;
+    cam->has_focus = has_focus;
+    cam->min_focus_dist = min_focus;
+    cam->has_exposure = has_exp;
+    cam->min_exposure = min_exp;
+    cam->max_exposure = max_exp;
+    cam->orientation = orientation;
+    cam->hflip = hflip;
+
+    if (index >= g_camera_count) {
+        g_camera_count = index + 1;
+    }
+    pthread_mutex_unlock(&g_v4l2_mutex);
+
+    /* Initialize camera 0 as default active sensor */
+    if (index == 0) {
+        v4l2_switch_camera(0);
+    }
+}
+
 
 int v4l2_get_android_format() { return g_current_android_format; }
 int v4l2_get_width() { return g_current_width; }

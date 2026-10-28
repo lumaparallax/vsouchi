@@ -729,6 +729,67 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         char ack[4] = {(char)0xDE, (char)0xAD, (char)0xBE, (char)0xEF};
         v4l2_send_reply(socket_fd, client_fd, 0, ack, 4);
         return 3;
+
+    } else if (cmd == CMD_ENUM_INPUT) {
+        IpcV4l2Input req;
+        if (read_exact(socket_fd, &req, sizeof(IpcV4l2Input)) != 0) return -1;
+
+        pthread_mutex_lock(&g_v4l2_mutex);
+        if (req.index >= (uint32_t)g_camera_count) {
+            pthread_mutex_unlock(&g_v4l2_mutex);
+            v4l2_send_error(socket_fd, client_fd, EINVAL);
+            return 0;
+        }
+
+        IpcV4l2Input reply;
+        memset(&reply, 0, sizeof(IpcV4l2Input));
+        reply.index = req.index;
+        reply.type = 2; /* V4L2_INPUT_TYPE_CAMERA */
+        snprintf(reply.name, sizeof(reply.name), "%s", g_cameras[req.index].name);
+        pthread_mutex_unlock(&g_v4l2_mutex);
+
+        v4l2_send_reply(socket_fd, client_fd, 0, &reply, sizeof(IpcV4l2Input));
+        return 0;
+
+    } else if (cmd == CMD_G_INPUT) {
+        pthread_mutex_lock(&g_v4l2_mutex);
+        uint32_t active = (uint32_t)g_active_camera_idx;
+        pthread_mutex_unlock(&g_v4l2_mutex);
+
+        v4l2_send_reply(socket_fd, client_fd, 0, &active, sizeof(uint32_t));
+        return 0;
+
+    } else if (cmd == CMD_S_INPUT) {
+        uint32_t target_idx;
+        if (read_exact(socket_fd, &target_idx, sizeof(uint32_t)) != 0) return -1;
+
+        pthread_mutex_lock(&g_v4l2_mutex);
+        /* V4L2 spec: switching video inputs during active streaming must fail with EBUSY */
+        if (g_is_streaming) {
+            pthread_mutex_unlock(&g_v4l2_mutex);
+            v4l2_send_error(socket_fd, client_fd, EBUSY);
+            return 0;
+        }
+
+        if (target_idx >= (uint32_t)g_camera_count) {
+            pthread_mutex_unlock(&g_v4l2_mutex);
+            v4l2_send_error(socket_fd, client_fd, EINVAL);
+            return 0;
+        }
+
+        int already_active = (target_idx == (uint32_t)g_active_camera_idx);
+        pthread_mutex_unlock(&g_v4l2_mutex);
+
+        if (!already_active) {
+            if (v4l2_switch_camera((int)target_idx) != 0) {
+                v4l2_send_error(socket_fd, client_fd, EINVAL);
+                return 0;
+            }
+        }
+
+        int32_t ack = 0;
+        v4l2_send_reply(socket_fd, client_fd, 0, &ack, sizeof(ack));
+        return already_active ? 0 : 5;
     }
 
     return 0;

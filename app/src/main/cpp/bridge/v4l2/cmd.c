@@ -292,16 +292,16 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
             }
         }
 
-        if (req.index == 0) {
-            for (int i = 0; i < g_res_count; i++) {
-                if (g_resolutions[i].android_format == target_android_fmt && 
-                    g_resolutions[i].width == req.width && 
-                    g_resolutions[i].height == req.height) {
-                    
+        for (int i = 0; i < g_res_count; i++) {
+            if (g_resolutions[i].android_format == target_android_fmt && 
+                g_resolutions[i].width == req.width && 
+                g_resolutions[i].height == req.height) {
+                
+                if (req.index < g_resolutions[i].fps_count) {
                     req.fps_numerator = 1;
-                    req.fps_denominator = g_resolutions[i].max_fps; 
-                    break;
+                    req.fps_denominator = g_resolutions[i].fps_list[req.index];
                 }
+                break;
             }
         }
         v4l2_send_reply(socket_fd, client_fd, 0, &req, sizeof(IpcV4l2FrmIvalEnum));

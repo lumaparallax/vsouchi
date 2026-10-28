@@ -29,6 +29,51 @@ public class CaptureSessionController {
     private float maxFocusDiopters = 10.0f;
 
     private int templateType = CameraDevice.TEMPLATE_RECORD;
+    private Range<Integer>[] availableFpsRanges;
+
+    public void setAvailableFpsRanges(Range<Integer>[] ranges) {
+        this.availableFpsRanges = ranges;
+    }
+
+    private Range<Integer> selectBestFpsRange(int requestedFps) {
+        if (availableFpsRanges == null || availableFpsRanges.length == 0) {
+            int safeFps = Math.max(1, requestedFps);
+            return new Range<>(safeFps, safeFps);
+        }
+
+        Range<Integer> bestRange = availableFpsRanges[0];
+        int bestDiff = Integer.MAX_VALUE;
+        int bestSpan = Integer.MAX_VALUE;
+
+        for (Range<Integer> range : availableFpsRanges) {
+            int upper = range.getUpper();
+            int lower = range.getLower();
+
+            if (upper == requestedFps && lower == requestedFps) {
+                return range;
+            }
+
+            int diff = Math.abs(upper - requestedFps);
+            int span = upper - lower;
+
+            // If requestedFps is covered by [lower, upper], favor it over an out-of-range fixed rate
+            if (requestedFps >= lower && requestedFps <= upper) {
+                diff = Math.min(diff, Math.abs(lower - requestedFps));
+            }
+
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                bestSpan = span;
+                bestRange = range;
+            } else if (diff == bestDiff) {
+                if (span < bestSpan) {
+                    bestSpan = span;
+                    bestRange = range;
+                }
+            }
+        }
+        return bestRange;
+    }
 
     public void setMaxFocusDiopters(float maxDiopters) {
         if (maxDiopters > 0.0f) {
@@ -67,7 +112,9 @@ public class CaptureSessionController {
         try {
             CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(templateType);
             builder.addTarget(activeSurface);
-            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(activeFps, activeFps));
+
+            Range<Integer> targetRange = selectBestFpsRange(activeFps);
+            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, targetRange);
 
             builder.set(CaptureRequest.CONTROL_AF_MODE, stateFocusMode);
             if (stateFocusMode == CaptureRequest.CONTROL_AF_MODE_OFF) {

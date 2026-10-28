@@ -21,11 +21,15 @@ typedef struct {
     uint32_t flags;
 } FormatMap;
 
+#define MAX_FPS_PER_RES 16
+
 typedef struct {
     int android_format;
     uint32_t width;
     uint32_t height;
     uint32_t max_fps;
+    uint32_t fps_count;
+    uint32_t fps_list[MAX_FPS_PER_RES];
 } ResolutionMap;
 
 #define MAX_CAMERAS 16

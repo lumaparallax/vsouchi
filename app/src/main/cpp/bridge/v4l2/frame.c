@@ -85,13 +85,29 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
         int is_nv12 = (fmt == v4l2_fourcc('N', 'V', '1', '2'));
         int is_nv21 = (fmt == v4l2_fourcc('N', 'V', '2', '1'));
 
-        // Zero-Padding Contiguous NV12 / NV21 direct from GPU optimization
-        int direct_nv12 = (is_nv12 && uv_pixel_stride == 2 && uv_stride == width && y_stride == width && u_data == v_data - 1);
-        int direct_nv21 = (is_nv21 && uv_pixel_stride == 2 && uv_stride == width && y_stride == width && v_data == u_data - 1);
+        /* Check if hardware plane layout natively matches requested semi-planar NV12/NV21 */
+        int match_nv12 = (is_nv12 && uv_pixel_stride == 2 && u_data == v_data - 1);
+        int match_nv21 = (is_nv21 && uv_pixel_stride == 2 && v_data == u_data - 1);
 
-        if (direct_nv12 || direct_nv21) {
+        if (match_nv12 || match_nv21) {
             uint32_t total_sz = (width * height * 3) / 2;
-            memcpy(payload, y_data, total_sz);
+
+            if (y_stride == width && uv_stride == width) {
+                /* Zero-copy linear match directly from GPU buffer */
+                memcpy(payload, y_data, total_sz);
+            } else {
+                /* Fast single-pass row unpadding (bypasses double libyuv conversion) */
+                uint8_t* dst_y = payload;
+                for (int r = 0; r < height; r++) {
+                    memcpy(dst_y + r * width, y_data + r * y_stride, width);
+                }
+
+                uint8_t* dst_uv = payload + (width * height);
+                const uint8_t* src_uv = match_nv12 ? u_data : v_data;
+                for (int r = 0; r < height / 2; r++) {
+                    memcpy(dst_uv + r * width, src_uv + r * uv_stride, width);
+                }
+            }
             v4l2_set_buffer_bytesused(index, total_sz);
         } else {
             uint32_t req_size = (width * height * 3) / 2;

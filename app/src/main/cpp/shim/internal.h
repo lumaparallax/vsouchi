@@ -21,6 +21,7 @@ extern int g_broker_fd;
 extern pthread_mutex_t g_ipc_mutex;
 
 int shim_v4l2_check_and_clear_buffer_owner(int fd);
+void shim_v4l2_reset_nodes(void);
 int shim_ipc_transaction(uint32_t cmd, const void* req_payload, size_t req_sz, void* resp_payload, size_t resp_sz);
 int recv_single_fd(int socket);
 int safe_write(int fd, const void *buf, size_t count);

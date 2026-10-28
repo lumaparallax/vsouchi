@@ -13,6 +13,7 @@ void v4l2_clear_cameras(void);
 void v4l2_add_camera(int index, const char* name, const char* id,
                      int* formats, int fmt_count,
                      int* res_fmts, int* res_ws, int* res_hs, int* res_fps, int res_count,
+                     int* ae_fps, int ae_fps_count,
                      int cfa, int has_focus, float min_focus, int has_exp,
                      long min_exp, long max_exp, int orientation, int hflip);
 int v4l2_switch_camera(int index);

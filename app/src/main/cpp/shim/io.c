@@ -565,6 +565,9 @@ int close(int fd) {
     int saved_errno = errno;
 
     if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
+        /* Purge control subscriptions before taking IPC lock to avoid lock inversion */
+        shim_v4l2_event_cleanup(fd);
+
         pthread_mutex_lock(&g_ipc_mutex);
 
         // Minor-aware teardown: if this descriptor owns streaming on its node, cleanly stop it
@@ -583,7 +586,6 @@ int close(int fd) {
             }
         }
 
-        shim_v4l2_event_cleanup(fd);
         g_vsouchi_fds[fd] = 0;
         g_vsouchi_fd_minor[fd] = 0;
         g_vsouchi_fd_flags[fd] = 0;
@@ -594,6 +596,7 @@ int close(int fd) {
             real_close(g_broker_fd);
             g_broker_fd = -1;
             shim_clear_memfds();
+            shim_v4l2_reset_nodes();
         }
         pthread_mutex_unlock(&g_ipc_mutex);
     }

@@ -220,6 +220,7 @@ int v4l2_switch_camera(int index) {
 void v4l2_add_camera(int index, const char* name, const char* id,
                      int* formats, int fmt_count,
                      int* res_fmts, int* res_ws, int* res_hs, int* res_fps, int res_count,
+                     int* ae_fps, int ae_fps_count,
                      int cfa, int has_focus, float min_focus, int has_exp,
                      long min_exp, long max_exp, int orientation, int hflip) {
     if (index < 0 || index >= MAX_CAMERAS) return;
@@ -265,7 +266,38 @@ void v4l2_add_camera(int index, const char* name, const char* id,
         cam->resolutions[i].android_format = res_fmts[i];
         cam->resolutions[i].width = (uint32_t)res_ws[i];
         cam->resolutions[i].height = (uint32_t)res_hs[i];
-        cam->resolutions[i].max_fps = (uint32_t)res_fps[i];
+        uint32_t max_f = (uint32_t)res_fps[i];
+        cam->resolutions[i].max_fps = max_f;
+
+        uint32_t count = 0;
+
+        /* If max_fps is not in ae_fps, insert it first */
+        int has_exact_max = 0;
+        for (int f = 0; f < ae_fps_count; f++) {
+            if ((uint32_t)ae_fps[f] == max_f) {
+                has_exact_max = 1;
+                break;
+            }
+        }
+        if (!has_exact_max && max_f > 0 && count < MAX_FPS_PER_RES) {
+            cam->resolutions[i].fps_list[count++] = max_f;
+        }
+
+        for (int f = 0; f < ae_fps_count && count < MAX_FPS_PER_RES; f++) {
+            uint32_t rate = (uint32_t)ae_fps[f];
+            if (rate <= max_f && rate > 0) {
+                if (rate != max_f) {
+                    cam->resolutions[i].fps_list[count++] = rate;
+                } else if (has_exact_max && count == 0) {
+                    cam->resolutions[i].fps_list[count++] = rate;
+                }
+            }
+        }
+
+        if (count == 0) {
+            cam->resolutions[i].fps_list[count++] = (max_f > 0) ? max_f : 30;
+        }
+        cam->resolutions[i].fps_count = count;
     }
 
     cam->cfa_pattern = cfa;
@@ -287,7 +319,6 @@ void v4l2_add_camera(int index, const char* name, const char* id,
         v4l2_switch_camera(0);
     }
 }
-
 
 int v4l2_get_android_format() { return g_current_android_format; }
 int v4l2_get_width() { return g_current_width; }

@@ -13,6 +13,7 @@ public class NativeBridge {
     public native void nativeClearCameras();
     public native void nativeAddCamera(int index, String deviceName, String cameraId,
                                       int[] formats, int[] resFormats, int[] resWs, int[] resHs, int[] resFps,
+                                      int[] aeFps,
                                       int cfa, boolean hasFocus, float minFocus, boolean hasExposure,
                                       long minExposure, long maxExposure, int orientation, int hflip);
     public native boolean nativeConnect(int udsFd);

@@ -74,6 +74,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
 JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeAddCamera(
         JNIEnv *env, jobject thiz, jint index, jstring deviceName, jstring cameraId,
         jintArray formats, jintArray resFormats, jintArray resWs, jintArray resHs, jintArray resFps,
+        jintArray aeFps,
         jint cfa, jboolean hasFocus, jfloat minFocus, jboolean hasExposure,
         jlong minExposure, jlong maxExposure, jint orientation, jint hflip) {
 
@@ -89,9 +90,13 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
     jint *rh = (*env)->GetIntArrayElements(env, resHs, 0);
     jint *rr = (*env)->GetIntArrayElements(env, resFps, 0);
 
+    jsize aeFpsLen = (*env)->GetArrayLength(env, aeFps);
+    jint *aeBody = (*env)->GetIntArrayElements(env, aeFps, 0);
+
     v4l2_add_camera((int)index, nameStr, idStr,
                     (int*)fmtBody, (int)fmtLen,
                     (int*)rf, (int*)rw, (int*)rh, (int*)rr, (int)resLen,
+                    (int*)aeBody, (int)aeFpsLen,
                     (int)cfa, (int)hasFocus, (float)minFocus, (int)hasExposure,
                     (long)minExposure, (long)maxExposure, (int)orientation, (int)hflip);
 
@@ -100,6 +105,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
     (*env)->ReleaseIntArrayElements(env, resWs, rw, JNI_ABORT);
     (*env)->ReleaseIntArrayElements(env, resHs, rh, JNI_ABORT);
     (*env)->ReleaseIntArrayElements(env, resFps, rr, JNI_ABORT);
+    (*env)->ReleaseIntArrayElements(env, aeFps, aeBody, JNI_ABORT);
     (*env)->ReleaseStringUTFChars(env, deviceName, nameStr);
     (*env)->ReleaseStringUTFChars(env, cameraId, idStr);
 }

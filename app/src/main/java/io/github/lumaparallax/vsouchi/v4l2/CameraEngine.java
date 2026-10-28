@@ -89,7 +89,7 @@ public class CameraEngine {
 
         if (needsNewReader) {
             bridge.nativeDestroyImageReader();
-            activeSurface = bridge.nativeCreateImageReader(width, height, format, 3);
+            activeSurface = bridge.nativeCreateImageReader(width, height, format, 4);
             
             if (activeSurface == null) {
                 Logger.e(TAG, "FATAL: C-Bridge failed to allocate NDK ImageReader!", null);
@@ -134,6 +134,8 @@ public class CameraEngine {
                     if (minFocus != null && minFocus > 0.0f) {
                         setMaxFocusDiopters(minFocus);
                     }
+                    Range<Integer>[] ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+                    sessionController.setAvailableFpsRanges(ranges);
                 } catch (Exception ignored) {}
 
                 manager.openCamera(cid, new CameraDevice.StateCallback() {
@@ -173,16 +175,6 @@ public class CameraEngine {
         if (activeSurface == null || cameraDevice == null) return;
 
         try {
-            int template = (activeFormat == ImageFormat.RAW_SENSOR)
-                    ? CameraDevice.TEMPLATE_STILL_CAPTURE
-                    : CameraDevice.TEMPLATE_RECORD;
-            final CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(template);
-            builder.addTarget(activeSurface);
-
-            // Zero latency hardware fix: forces Android to strictly respect the V4L2 requested framerate 
-            // Didnt work as expected but acceptable for now.
-            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(activeFps, activeFps));
-
             cameraDevice.createCaptureSession(Arrays.asList(activeSurface), new CameraCaptureSession.StateCallback() {
                 @Override
                 public void onConfigured(CameraCaptureSession session) {

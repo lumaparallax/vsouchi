@@ -49,6 +49,30 @@ public class CameraHardwareManager {
         return "Rear Main";
     }
 
+    private int[] extractAeFpsTargets(CameraCharacteristics chars) {
+        android.util.Range<Integer>[] ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+        java.util.Set<Integer> fpsSet = new java.util.TreeSet<>(java.util.Collections.reverseOrder());
+        if (ranges != null) {
+            for (android.util.Range<Integer> r : ranges) {
+                if (r.getUpper() >= 5) {
+                    fpsSet.add(r.getUpper());
+                }
+                if (r.getLower() >= 10) {
+                    fpsSet.add(r.getLower());
+                }
+            }
+        }
+        if (fpsSet.isEmpty()) {
+            fpsSet.add(30);
+        }
+        int[] result = new int[fpsSet.size()];
+        int idx = 0;
+        for (int f : fpsSet) {
+            result[idx++] = f;
+        }
+        return result;
+    }
+
     public void probeAndPushCapabilities() {
         try {
             CameraManager manager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -134,8 +158,11 @@ public class CameraHardwareManager {
                             resHs[idx] = s.getHeight();
 
                             long minFrameDuration = map.getOutputMinFrameDuration(fmt, s);
-                            if (minFrameDuration > 0) {
-                                resFps[idx] = (int) Math.round(1_000_000_000.0 / minFrameDuration);
+                            long stallDuration = map.getOutputStallDuration(fmt, s);
+                            long totalDuration = minFrameDuration + stallDuration;
+
+                            if (totalDuration > 0) {
+                                resFps[idx] = (int) Math.max(1, Math.round(1_000_000_000.0 / totalDuration));
                             } else {
                                 resFps[idx] = 30;
                             }
@@ -162,7 +189,10 @@ public class CameraHardwareManager {
                 int orientation = (sensorOrientation != null) ? sensorOrientation : 0;
                 int hflip = (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) ? 1 : 0;
 
+                int[] aeFps = extractAeFpsTargets(chars);
+
                 bridge.nativeAddCamera(i, deviceName, cameraId, formats, resFmts, resWs, resHs, resFps,
+                        aeFps,
                         cfaVal, hasFocus, focusMaxVal, hasExposure, minExp, maxExp, orientation, hflip);
                 Logger.i(TAG, "Registered camera [" + i + "]: " + deviceName + " (ID " + cameraId + ")");
             }

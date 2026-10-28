@@ -33,6 +33,9 @@
 #ifndef V4L2_BUF_CAP_SUPPORTS_ORPHANED_BUFS
 #define V4L2_BUF_CAP_SUPPORTS_ORPHANED_BUFS 0x00000010
 #endif
+#ifndef POLLRDHUP
+#define POLLRDHUP 0x2000
+#endif
 
 #define MAX_EVENTS_PER_FD 16
 #define MAX_SUBS_PER_FD 16
@@ -78,11 +81,21 @@ int shim_v4l2_check_and_clear_buffer_owner(int fd) {
     if (fd < 0 || fd >= 1024) return 0;
     int minor = get_minor(fd);
     if (g_nodes[minor].buffer_owner_fd == fd) {
+        int was_streaming = g_nodes[minor].is_streaming;
         g_nodes[minor].buffer_owner_fd = -1;
         g_nodes[minor].is_streaming = 0;
-        return 1;
+        return was_streaming;
     }
     return 0;
+}
+
+void shim_v4l2_reset_nodes(void) {
+    for (int i = 0; i < MAX_VSOUCHI_MINORS; i++) {
+        g_nodes[i].buffer_owner_fd = -1;
+        g_nodes[i].prio_owner_fd = -1;
+        g_nodes[i].current_prio = V4L2_PRIORITY_DEFAULT;
+        g_nodes[i].is_streaming = 0;
+    }
 }
 
 typedef struct {
@@ -492,8 +505,14 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         int minor = get_minor(fd);
 
         if (g_nodes[minor].buffer_owner_fd != -1 && g_nodes[minor].buffer_owner_fd != fd) {
-            errno = EBUSY;
-            return -1;
+            /* If the recorded owner descriptor was closed without explicit release, reclaim ownership */
+            if (fcntl(g_nodes[minor].buffer_owner_fd, F_GETFD) == -1 && errno == EBADF) {
+                g_nodes[minor].buffer_owner_fd = -1;
+                g_nodes[minor].is_streaming = 0;
+            } else {
+                errno = EBUSY;
+                return -1;
+            }
         }
 
         IpcV4l2ReqBufs ipc_req;
@@ -689,14 +708,36 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
             is_nonblock = 1;
         }
 
-        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        struct pollfd pfds[2];
+        pfds[0].fd = fd;
+        pfds[0].events = POLLIN;
+
+        int num_pfds = 1;
+        if (g_broker_fd >= 0) {
+            pfds[1].fd = g_broker_fd;
+            pfds[1].events = POLLHUP | POLLERR | POLLRDHUP;
+            num_pfds = 2;
+        }
+
         int timeout_ms = is_nonblock ? 0 : -1;
-        
-        int p_res = poll(&pfd, 1, timeout_ms);
+        int p_res = poll(pfds, num_pfds, timeout_ms);
+
         if (p_res == 0) {
             errno = EAGAIN;
             return -1;
         } else if (p_res < 0) {
+            return -1;
+        }
+
+        /* If broker hung up or crashed while waiting for a frame */
+        if (num_pfds == 2 && (pfds[1].revents & (POLLHUP | POLLERR | POLLRDHUP))) {
+            errno = ENODEV;
+            return -1;
+        }
+
+        /* Guard against waking on descriptors other than frame ready */
+        if (!(pfds[0].revents & POLLIN)) {
+            errno = EAGAIN;
             return -1;
         }
 

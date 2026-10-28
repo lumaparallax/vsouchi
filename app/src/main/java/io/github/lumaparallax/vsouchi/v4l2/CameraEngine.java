@@ -47,7 +47,7 @@ public class CameraEngine {
     }
 
     @SuppressLint("MissingPermission")
-    public void start(int width, int height, int fps, int format) {
+    public synchronized void start(int width, int height, int fps, int format) {
         if (isStreaming && width == activeWidth && height == activeHeight && fps == activeFps && format == activeFormat) return;
         isStreaming = false; 
 
@@ -105,17 +105,28 @@ public class CameraEngine {
                 manager.openCamera(cid, new CameraDevice.StateCallback() {
                     @Override
                     public void onOpened(CameraDevice camera) {
-                        isCameraBooting = false; 
-                        cameraDevice = camera;
-                        createSession(); 
+                        synchronized (CameraEngine.this) {
+                            isCameraBooting = false;
+                            /* Abandon configuration if stream was stopped before hardware finished opening */
+                            if (!isStreaming) {
+                                camera.close();
+                                return;
+                            }
+                            cameraDevice = camera;
+                            createSession();
+                        }
                     }
                     @Override public void onDisconnected(CameraDevice c) { 
-                        isCameraBooting = false; 
-                        c.close(); cameraDevice = null; 
+                        synchronized (CameraEngine.this) {
+                            isCameraBooting = false; 
+                            c.close(); cameraDevice = null;
+                        }
                     }
                     @Override public void onError(CameraDevice c, int e) { 
-                        isCameraBooting = false; 
-                        c.close(); cameraDevice = null; 
+                        synchronized (CameraEngine.this) {
+                            isCameraBooting = false; 
+                            c.close(); cameraDevice = null;
+                        }
                     }
                 }, backgroundHandler);
             } catch (Exception e) { isCameraBooting = false; }
@@ -124,7 +135,7 @@ public class CameraEngine {
         isStreaming = true; 
     }
 
-    private void createSession() {
+    private synchronized void createSession() {
         if (activeSurface == null || cameraDevice == null) return;
 
         try {
@@ -141,8 +152,15 @@ public class CameraEngine {
             cameraDevice.createCaptureSession(Arrays.asList(activeSurface), new CameraCaptureSession.StateCallback() {
                 @Override
                 public void onConfigured(CameraCaptureSession session) {
-                    captureSession = session;
-                    sessionController.updateRepeatingRequest(cameraDevice, activeSurface, activeFps, captureSession, backgroundHandler);
+                    synchronized (CameraEngine.this) {
+                        /* Do not start repeating requests if stream was stopped during session creation */
+                        if (!isStreaming || cameraDevice == null) {
+                            session.close();
+                            return;
+                        }
+                        captureSession = session;
+                        sessionController.updateRepeatingRequest(cameraDevice, activeSurface, activeFps, captureSession, backgroundHandler);
+                    }
                 }
                 @Override public void onConfigureFailed(CameraCaptureSession s) {
                     Logger.e(TAG, "Hardware REJECTED the session!", null);
@@ -153,13 +171,13 @@ public class CameraEngine {
         }
     }
 
-    public void applyControl(int controlId, int value) {
+    public synchronized void applyControl(int controlId, int value) {
         if (isStreaming) {
             sessionController.applyControl(controlId, value, cameraDevice, activeSurface, activeFps, captureSession, backgroundHandler);
         }
     }
 
-    public void stopStream() {
+    public synchronized void stopStream() {
         isStreaming = false;
         if (captureSession != null) {
             try {
@@ -169,7 +187,7 @@ public class CameraEngine {
         }
     }
 
-    public void destroy() {
+    public synchronized void destroy() {
         isStreaming = false;
 
         if (captureSession != null) { 

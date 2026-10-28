@@ -37,6 +37,7 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
 
     uint8_t* payload = (uint8_t*)v4l2_get_buffer_ptr(index);
     if (!payload) { 
+        v4l2_abort_write(index);
         AImage_delete(image); 
         return; 
     }

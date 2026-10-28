@@ -42,17 +42,13 @@ public class NativeBridge {
 
     public void onStreamOff() {
         if (cameraEngine != null) {
-            new Thread(() -> {
-                cameraEngine.stopStream(); 
-            }).start();
+            cameraEngine.stopStream();
         }
     }
 
     public void onDisconnect() {
         if (cameraEngine != null) {
-            new Thread(() -> {
-                cameraEngine.destroy(); 
-            }).start();
+            cameraEngine.destroy();
         }
     }
 }

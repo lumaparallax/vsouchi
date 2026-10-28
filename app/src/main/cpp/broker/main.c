@@ -77,6 +77,8 @@ int broker_ensure_bridge(void) {
 }
 
 void* router_thread_func(void* arg) {
+    int bridge_fd = (int)(intptr_t)arg;
+
     while (1) {
         IpcInboundHeader hdr;
         struct msghdr msg = {0};
@@ -86,7 +88,7 @@ void* router_thread_func(void* arg) {
         char cmsg_buf[CMSG_SPACE(32 * sizeof(int))] = {0};
         msg.msg_control = cmsg_buf; msg.msg_controllen = sizeof(cmsg_buf);
 
-        if (recvmsg(g_bridge_fd, &msg, MSG_WAITALL) <= 0) goto bridge_died;
+        if (recvmsg(bridge_fd, &msg, MSG_WAITALL) <= 0) goto bridge_died;
 
         int fds[32]; int fd_count = 0;
         struct cmsghdr *cmsg;
@@ -112,7 +114,7 @@ void* router_thread_func(void* arg) {
             int remaining = hdr.payload_size;
             int offset = 0;
             while (remaining > 0) {
-                int r = read(g_bridge_fd, temp_payload + offset, remaining);
+                int r = read(bridge_fd, temp_payload + offset, remaining);
                 if (r <= 0) goto bridge_died;
                 remaining -= r; offset += r;
             }
@@ -138,11 +140,15 @@ void* router_thread_func(void* arg) {
 
 bridge_died:
     printf("[Broker] Bridge connection lost!\n");
+
     pthread_mutex_lock(&g_bridge_tx_mutex);
-    if (g_bridge_fd >= 0) {
-        close(g_bridge_fd);
-        g_bridge_fd = -1;
+    /* Bail out if nativeGetUds() already reconnected and superseded this instance */
+    if (g_bridge_fd != bridge_fd) {
+        pthread_mutex_unlock(&g_bridge_tx_mutex);
+        return NULL;
     }
+    close(g_bridge_fd);
+    g_bridge_fd = -1;
     pthread_mutex_unlock(&g_bridge_tx_mutex);
 
     pthread_mutex_lock(&g_clients_mutex);
@@ -174,7 +180,7 @@ JNIEXPORT jint JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_nativeGet
     g_bridge_fd = sv[0];
 
     pthread_t router_tid;
-    pthread_create(&router_tid, NULL, router_thread_func, NULL);
+    pthread_create(&router_tid, NULL, router_thread_func, (void*)(intptr_t)sv[0]);
     pthread_detach(router_tid);
 
     pthread_cond_broadcast(&g_bridge_cond);

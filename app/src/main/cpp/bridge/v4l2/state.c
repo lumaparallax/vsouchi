@@ -15,6 +15,7 @@
 #include <sys/syscall.h>
 #include <pthread.h>
 #include <sys/uio.h>
+#include <time.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <android/log.h>
@@ -262,7 +263,25 @@ void v4l2_send_error(int socket_fd, uint32_t client_fd, int32_t error_code) {
     v4l2_send_reply(socket_fd, client_fd, -error_code, NULL, 0);
 }
 
+static int g_in_flight_writes = 0;
+static pthread_cond_t g_write_done_cond = PTHREAD_COND_INITIALIZER;
+
 void v4l2_free_buffers() {
+    pthread_mutex_lock(&g_v4l2_mutex);
+    /* Drain in-flight frame conversions before unmapping memory */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_nsec += 50000000; /* 50ms cap */
+    if (ts.tv_nsec >= 1000000000) {
+        ts.tv_sec += 1;
+        ts.tv_nsec -= 1000000000;
+    }
+    while (g_in_flight_writes > 0) {
+        if (pthread_cond_timedwait(&g_write_done_cond, &g_v4l2_mutex, &ts) != 0) {
+            break;
+        }
+    }
+
     if (g_event_fd >= 0) {
         close(g_event_fd);
         g_event_fd = -1;
@@ -284,6 +303,7 @@ void v4l2_free_buffers() {
     g_buffer_count = 0;
     s_next_write_idx = 0;
     s_next_read_idx = 0;
+    pthread_mutex_unlock(&g_v4l2_mutex);
 }
 
 void v4l2_cleanup() {
@@ -391,7 +411,8 @@ int v4l2_is_buffer_ready_for_write(int index) {
     if (index < 0 || index >= (int)g_buffer_count) return 0;
 
     pthread_mutex_lock(&g_v4l2_mutex);
-    if (g_buffer_state[index] == 1) ready = 1;
+    /* State 3 represents an active write lease */
+    if (g_buffer_state[index] == 3 && g_is_streaming) ready = 1;
     pthread_mutex_unlock(&g_v4l2_mutex);
     
     return ready;
@@ -408,10 +429,16 @@ uint32_t v4l2_get_buffer_size(int index) {
 
 int v4l2_get_queued_index() {
     pthread_mutex_lock(&g_v4l2_mutex);
+    if (!g_is_streaming) {
+        pthread_mutex_unlock(&g_v4l2_mutex);
+        return -1;
+    }
     for (int i = 0; i < (int)g_buffer_count; i++) {
         int candidate = (s_next_write_idx + i) % (int)g_buffer_count;
         if (g_buffer_state[candidate] == 1) {
             s_next_write_idx = (candidate + 1) % (int)g_buffer_count;
+            g_buffer_state[candidate] = 3;
+            g_in_flight_writes++;
             pthread_mutex_unlock(&g_v4l2_mutex);
             return candidate;
         }
@@ -423,12 +450,36 @@ int v4l2_get_queued_index() {
 void v4l2_push_filled_buffer(int index) {
     pthread_mutex_lock(&g_v4l2_mutex);
     if (index >= 0 && index < (int)g_buffer_count) {
-        g_buffer_state[index] = 2; 
-        if (g_event_fd >= 0) {
-            uint64_t val = 1;
-            write(g_event_fd, &val, sizeof(val));
+        if (g_is_streaming) {
+            g_buffer_state[index] = 2; 
+            if (g_event_fd >= 0) {
+                uint64_t val = 1;
+                write(g_event_fd, &val, sizeof(val));
+            }
+            pthread_cond_signal(&g_v4l2_cond);
+        } else {
+            g_buffer_state[index] = 0;
         }
-        pthread_cond_signal(&g_v4l2_cond);
+    }
+    if (g_in_flight_writes > 0) {
+        g_in_flight_writes--;
+        if (g_in_flight_writes == 0) {
+            pthread_cond_broadcast(&g_write_done_cond);
+        }
+    }
+    pthread_mutex_unlock(&g_v4l2_mutex);
+}
+
+void v4l2_abort_write(int index) {
+    pthread_mutex_lock(&g_v4l2_mutex);
+    if (index >= 0 && index < (int)g_buffer_count) {
+        g_buffer_state[index] = 1;
+    }
+    if (g_in_flight_writes > 0) {
+        g_in_flight_writes--;
+        if (g_in_flight_writes == 0) {
+            pthread_cond_broadcast(&g_write_done_cond);
+        }
     }
     pthread_mutex_unlock(&g_v4l2_mutex);
 }
@@ -438,3 +489,4 @@ void v4l2_set_buffer_bytesused(int index, uint32_t size) {
         g_buffer_bytesused[index] = size;
     }
 }
+

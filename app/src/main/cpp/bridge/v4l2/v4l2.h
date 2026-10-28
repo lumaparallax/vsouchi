@@ -29,6 +29,7 @@ void v4l2_set_buffer_bytesused(int index, uint32_t size);
 uint32_t v4l2_get_buffer_size(int index);
 int v4l2_get_queued_index();
 void v4l2_push_filled_buffer(int index);
+void v4l2_abort_write(int index);
 uint32_t v4l2_get_current_format();
 int v4l2_is_buffer_ready_for_write(int index);
 

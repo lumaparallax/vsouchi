@@ -26,7 +26,7 @@ public class DaemonEntry extends IBridgeBinder.Stub {
     static {
         try { if (Looper.getMainLooper() == null) Looper.prepareMainLooper(); } catch (Exception ignored) {}
         handler = new Handler();
-        
+
         String libName = "libvsouchi_broker.so";
         String path = "lib/" + android.os.Build.SUPPORTED_ABIS[0] + "/" + libName;
         try {
@@ -42,7 +42,7 @@ public class DaemonEntry extends IBridgeBinder.Stub {
 
     public static void main(String[] args) {
         Logger.i(TAG, "Starting vSouchi Shell Daemon...");
-        
+
         // Kills Java process if the shell pipe closes, ensuring no orphaned daemons
         new Thread(() -> {
             try {

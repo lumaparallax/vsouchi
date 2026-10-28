@@ -24,22 +24,22 @@ public class ForegroundService extends Service {
     private static final int NOTIFICATION_ID = 4040;
     private NativeBridge nativeBridge;
     private CameraEngine cameraEngine;
-    private CameraHardwareManager hardwareManager; 
+    private CameraHardwareManager hardwareManager;
 
     @Override
     public void onCreate() {
         super.onCreate();
-        
+
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
                 "vSouchi IPC Service",
                 NotificationManager.IMPORTANCE_LOW
         );
         channel.setDescription("Maintains background V4L2 device streaming and IPC routing");
-        
+
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.createNotificationChannel(channel);
-        
+
         int badgeColor = ContextCompat.getColor(this, R.color.notification_background);
 
         Notification notification = new Notification.Builder(this, CHANNEL_ID)
@@ -53,7 +53,7 @@ public class ForegroundService extends Service {
                 .build();
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { 
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
             } else {
                 startForeground(NOTIFICATION_ID, notification);
@@ -67,10 +67,10 @@ public class ForegroundService extends Service {
         nativeBridge = new NativeBridge();
         cameraEngine = new CameraEngine(this, nativeBridge);
         nativeBridge.setCameraEngine(cameraEngine);
-        
+
         hardwareManager = new CameraHardwareManager(this, nativeBridge, cameraEngine);
         hardwareManager.probeAndPushCapabilities();
-        
+
         Logger.i(TAG, "Bridge Service created.");
     }
 
@@ -80,25 +80,21 @@ public class ForegroundService extends Service {
             int socketFd = intent.getIntExtra("socket_fd", -1);
             if (socketFd != -1) {
                 if (nativeBridge.nativeConnect(socketFd)) {
-                    
-                    // Wrap the native loop so it blocks until the shell environment disconnects.
+
                     new Thread(() -> {
-                        nativeBridge.nativeStartLoop(socketFd); 
-                        
+                        nativeBridge.nativeStartLoop(socketFd);
+
                         Logger.i(TAG, "IPC Loop exited. Shutting down physical camera lens and service.");
-                        
-                        // Physically kill the camera lens
+
                         if (cameraEngine != null) {
                             cameraEngine.destroy();
                         }
-                        
+
                         stopForeground(Service.STOP_FOREGROUND_REMOVE);
-                        
-                        // Kill the service so it doesn't run infinitely in the background after disconnect.
                         stopSelf();
-                        
+
                     }, "NativeBridgeLoop").start();
-                    
+
                 }
             }
         }
@@ -119,4 +115,3 @@ public class ForegroundService extends Service {
         return null;
     }
 }
-

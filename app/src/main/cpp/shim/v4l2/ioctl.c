@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 
-// Handles the massive VIDIOC_* translation layer for the virtual camera.
+// Handles the VIDIOC_* translation layer for the virtual camera.
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
@@ -18,6 +18,12 @@
 #include "shim/internal.h"
 #include "vsouchi_ipc.h"
 
+#ifndef V4L2_CTRL_CLASS_USER
+#define V4L2_CTRL_CLASS_USER 0x00980000
+#endif
+#ifndef V4L2_CTRL_CLASS_CAMERA
+#define V4L2_CTRL_CLASS_CAMERA 0x009a0000
+#endif
 #ifndef V4L2_CTRL_WHICH_DEF_VAL
 #define V4L2_CTRL_WHICH_DEF_VAL 0x0f000000
 #endif
@@ -33,6 +39,12 @@
 #ifndef V4L2_BUF_CAP_SUPPORTS_ORPHANED_BUFS
 #define V4L2_BUF_CAP_SUPPORTS_ORPHANED_BUFS 0x00000010
 #endif
+#ifndef V4L2_BUF_FLAG_REQUEST_FD
+#define V4L2_BUF_FLAG_REQUEST_FD 0x00080000
+#endif
+#ifndef V4L2_EVENT_ALL
+#define V4L2_EVENT_ALL 0
+#endif
 #ifndef POLLRDHUP
 #define POLLRDHUP 0x2000
 #endif
@@ -46,7 +58,6 @@ extern int g_shim_memfds[16];
 extern int g_vsouchi_fd_flags[1024];
 extern int g_vsouchi_fd_minor[1024];
 
-// Helper exposed from ipc.c to safely write directly during complex transactions
 extern int safe_write(int fd, const void *buf, size_t count);
 extern int safe_read(int fd, void *buf, size_t count);
 
@@ -116,14 +127,15 @@ static FdEventState g_fd_events[1024];
 static pthread_mutex_t g_event_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int is_valid_control_id(uint32_t id) {
-    if (id == 0x00980001 || id == 0x009a0001) return 1;
-    if (id == 0x00980914 || id == 0x00980915 || id == 0x00980922) return 1;
-    if (id == 0x009a0901 || id == 0x009a0902 || id == 0x009a090a || id == 0x009a090c) return 1;
+    if (id == V4L2_CID_USER_CLASS || id == V4L2_CID_CAMERA_CLASS) return 1;
+    if (id == V4L2_CID_HFLIP || id == V4L2_CID_VFLIP || id == V4L2_CID_ROTATE) return 1;
+    if (id == V4L2_CID_EXPOSURE_AUTO || id == V4L2_CID_EXPOSURE_ABSOLUTE) return 1;
+    if (id == V4L2_CID_FOCUS_ABSOLUTE || id == V4L2_CID_FOCUS_AUTO) return 1;
     return 0;
 }
 
 static int is_class_control(uint32_t id) {
-    return (id == 0x00980001 || id == 0x009a0001);
+    return (id == V4L2_CID_USER_CLASS || id == V4L2_CID_CAMERA_CLASS);
 }
 
 int shim_v4l2_has_event(int fd) {
@@ -170,7 +182,7 @@ static int shim_v4l2_subscribe_event(int fd, struct v4l2_event_subscription *sub
     st->subs[sub_idx].id = sub->id;
     st->subs[sub_idx].flags = sub->flags;
 
-    // V4L2 spec: class controls never fire events, even if SEND_INITIAL is requested
+    /* V4L2 spec: class controls never fire events, even if SEND_INITIAL is requested */
     if ((sub->flags & V4L2_EVENT_SUB_FL_SEND_INITIAL) && !is_class_control(sub->id)) {
         if (st->count < MAX_EVENTS_PER_FD) {
             struct v4l2_event *ev = &st->events[st->tail];
@@ -207,14 +219,14 @@ static int shim_v4l2_unsubscribe_event(int fd, struct v4l2_event_subscription *s
 
     int found = 0;
     for (int i = 0; i < st->num_subs; i++) {
-        if (st->subs[i].id == sub->id || sub->id == 0 /* V4L2_EVENT_ALL */) {
+        if (st->subs[i].id == sub->id || sub->id == V4L2_EVENT_ALL) {
             for (int j = i; j < st->num_subs - 1; j++) {
                 st->subs[j] = st->subs[j + 1];
             }
             st->num_subs--;
             i--;
             found = 1;
-            if (sub->id != 0) break;
+            if (sub->id != V4L2_EVENT_ALL) break;
         }
     }
 
@@ -224,12 +236,11 @@ static int shim_v4l2_unsubscribe_event(int fd, struct v4l2_event_subscription *s
         return -1;
     }
 
-    // Flush remaining queued events for this subscription
     int new_count = 0;
     struct v4l2_event new_events[MAX_EVENTS_PER_FD];
     for (int i = 0; i < st->count; i++) {
         int idx = (st->head + i) % MAX_EVENTS_PER_FD;
-        if (st->events[idx].id != sub->id && sub->id != 0) {
+        if (st->events[idx].id != sub->id && sub->id != V4L2_EVENT_ALL) {
             new_events[new_count++] = st->events[idx];
         }
     }
@@ -294,7 +305,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         cap->version = ipc_caps.version;
         cap->capabilities = ipc_caps.capabilities;
         cap->device_caps = ipc_caps.device_caps;
-        return 0; 
+        return 0;
     }
 
     if (req_clean == (uint32_t)VIDIOC_ENUMINPUT) {
@@ -357,7 +368,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         IpcV4l2CropCap ipc_req = { .type = crop->type };
 
         if (shim_ipc_transaction(CMD_CROPCAP, &ipc_req, sizeof(IpcV4l2CropCap), &ipc_req, sizeof(IpcV4l2CropCap)) != 0) return -1;
-        
+
         crop->bounds.left = ipc_req.bounds_left;
         crop->bounds.top = ipc_req.bounds_top;
         crop->bounds.width = ipc_req.bounds_width;
@@ -380,10 +391,10 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         }
 
         uint32_t cmd = (req_clean == (uint32_t)VIDIOC_G_PARM) ? CMD_G_PARM : CMD_S_PARM;
-        
+
         IpcV4l2StreamParm ipc_req;
         memset(&ipc_req, 0, sizeof(IpcV4l2StreamParm));
-        
+
         if (cmd == CMD_S_PARM && parm->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
             ipc_req.fps_numerator = parm->parm.capture.timeperframe.numerator;
             ipc_req.fps_denominator = parm->parm.capture.timeperframe.denominator;
@@ -393,7 +404,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
 
         memset(parm, 0, sizeof(*parm));
         parm->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        parm->parm.capture.capability = 0x1000; // V4L2_CAP_TIMEPERFRAME
+        parm->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
         parm->parm.capture.timeperframe.numerator = ipc_req.fps_numerator;
         parm->parm.capture.timeperframe.denominator = ipc_req.fps_denominator;
         return 0;
@@ -448,9 +459,9 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         f->fmt.pix.sizeimage = ipc_fmt.sizeimage;
         f->fmt.pix.field = ipc_fmt.field;
         f->fmt.pix.colorspace = ipc_fmt.colorspace;
-        f->fmt.pix.ycbcr_enc = 0; // V4L2_YCBCR_ENC_DEFAULT
-        f->fmt.pix.quantization = 0; // V4L2_QUANTIZATION_DEFAULT
-        f->fmt.pix.xfer_func = 0; // V4L2_XFER_FUNC_DEFAULT
+        f->fmt.pix.ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+        f->fmt.pix.quantization = V4L2_QUANTIZATION_DEFAULT;
+        f->fmt.pix.xfer_func = V4L2_XFER_FUNC_DEFAULT;
         f->fmt.pix.priv = 0;
         return 0;
     }
@@ -480,8 +491,8 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         memset(&ipc_req, 0, sizeof(IpcV4l2FrmIvalEnum));
         ipc_req.index = fival->index;
         ipc_req.pixel_format = fival->pixel_format;
-        ipc_req.width = fival->width;   
-        ipc_req.height = fival->height; 
+        ipc_req.width = fival->width;
+        ipc_req.height = fival->height;
 
         if (shim_ipc_transaction(CMD_ENUM_FRAMEINTERVALS, &ipc_req, sizeof(IpcV4l2FrmIvalEnum), &ipc_req, sizeof(IpcV4l2FrmIvalEnum)) != 0) return -1;
         if (ipc_req.fps_numerator == 0) { errno = EINVAL; return -1; }
@@ -496,7 +507,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
     if (req_clean == (uint32_t)VIDIOC_REQBUFS) {
         CHECK_ARG();
         struct v4l2_requestbuffers *req = (struct v4l2_requestbuffers *)arg;
-        
+
         if (req->type != V4L2_BUF_TYPE_VIDEO_CAPTURE || req->memory != V4L2_MEMORY_MMAP) {
             errno = EINVAL;
             return -1;
@@ -523,10 +534,10 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
 
         pthread_mutex_lock(&g_ipc_mutex);
         shim_clear_memfds();
-        
+
         uint32_t cmd = CMD_REQBUFS;
         struct iovec iov[2] = { { &cmd, sizeof(uint32_t) }, { &ipc_req, sizeof(IpcV4l2ReqBufs) } };
-        
+
         struct msghdr msg = {0};
         msg.msg_iov = iov;
         msg.msg_iovlen = 2;
@@ -558,10 +569,10 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         req->capabilities = V4L2_BUF_CAP_SUPPORTS_MMAP | V4L2_BUF_CAP_SUPPORTS_ORPHANED_BUFS;
         req->flags = 0;
         memset(req->reserved, 0, sizeof(req->reserved));
-        
-        for (uint32_t i = 0; i < ipc_req.count; i++) { 
+
+        for (uint32_t i = 0; i < ipc_req.count; i++) {
             char ack = 'R';
-            safe_write(g_broker_fd, &ack, 1); 
+            safe_write(g_broker_fd, &ack, 1);
             int received_fd = recv_single_fd(g_broker_fd);
             if (received_fd >= 0) {
                 g_shim_memfds[i] = received_fd;
@@ -573,10 +584,9 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
             safe_write(g_broker_fd, &ack, 1);
             int ev_fd = recv_single_fd(g_broker_fd);
             if (ev_fd >= 0) {
-                int old_flags = fcntl(fd, F_GETFL);
                 dup2(ev_fd, fd);
 
-                // Enforce the descriptor's true open flags on the adopted eventfd
+                /* Enforce the descriptor's true open flags on the adopted eventfd */
                 int cur_flags = fcntl(fd, F_GETFL);
                 if (cur_flags != -1) {
                     if (g_vsouchi_fd_flags[fd] & O_NONBLOCK) {
@@ -619,7 +629,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         buf->m.offset = ipc_req.offset;
         buf->flags = ipc_req.flags;
         buf->memory = V4L2_MEMORY_MMAP;
-        buf->field = 1; // V4L2_FIELD_NONE
+        buf->field = V4L2_FIELD_NONE;
         buf->bytesused = 0;
         buf->sequence = 0;
         buf->timestamp.tv_sec = 0;
@@ -637,7 +647,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
             return -1;
         }
 
-        if (buf->flags & 0x00080000 /* V4L2_BUF_FLAG_REQUEST_FD */) {
+        if (buf->flags & V4L2_BUF_FLAG_REQUEST_FD) {
             errno = EINVAL;
             return -1;
         }
@@ -655,33 +665,6 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         buf->sequence = 0;
         buf->timestamp.tv_sec = 0;
         buf->timestamp.tv_usec = 0;
-        buf->reserved = 0;
-        buf->reserved2 = 0;
-        return 0;
-    }
-
-    if (req_clean == (uint32_t)VIDIOC_QBUF) {
-        CHECK_ARG();
-        struct v4l2_buffer *buf = (struct v4l2_buffer *)arg;
-        if (buf->type != V4L2_BUF_TYPE_VIDEO_CAPTURE || buf->memory != V4L2_MEMORY_MMAP) {
-            errno = EINVAL;
-            return -1;
-        }
-
-        if (buf->flags & 0x00080000 /* V4L2_BUF_FLAG_REQUEST_FD */) {
-            errno = EINVAL;
-            return -1;
-        }
-
-        IpcV4l2Buffer ipc_req;
-        memset(&ipc_req, 0, sizeof(IpcV4l2Buffer));
-        ipc_req.index = buf->index;
-        ipc_req.type = buf->type;
-        ipc_req.memory = buf->memory;
-
-        if (shim_ipc_transaction(CMD_QBUF, &ipc_req, sizeof(IpcV4l2Buffer), &ipc_req, sizeof(IpcV4l2Buffer)) != 0) return -1;
-
-        buf->flags = ipc_req.flags;
         buf->reserved = 0;
         buf->reserved2 = 0;
         return 0;
@@ -759,9 +742,9 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
 
         buf->index = ipc_req.index;
         buf->bytesused = ipc_req.bytesused;
-        buf->length = ipc_req.length; 
+        buf->length = ipc_req.length;
         buf->flags = ipc_req.flags;
-        buf->field = 1; // V4L2_FIELD_NONE
+        buf->field = V4L2_FIELD_NONE;
         buf->sequence = ipc_req.sequence;
         buf->reserved = 0;
         buf->reserved2 = 0;
@@ -790,7 +773,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         int minor = get_minor(fd);
         uint32_t cmd = (req_clean == (uint32_t)VIDIOC_STREAMON) ? CMD_STREAMON : CMD_STREAMOFF;
 
-        // If turning stream off, mark state immediately so any concurrently waking DQBUF aborts
+        /* If turning stream off, mark state immediately so any concurrently waking DQBUF aborts */
         if (cmd == CMD_STREAMOFF) {
             g_nodes[minor].is_streaming = 0;
         }
@@ -818,7 +801,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
 
         if (shim_ipc_transaction(CMD_QUERYCTRL, &req_id, sizeof(uint32_t), &response, sizeof(struct v4l2_queryctrl)) != 0) return -1;
         if (response.id == 0) { errno = EINVAL; return -1; }
-        
+
         memcpy(ctrl, &response, sizeof(struct v4l2_queryctrl));
         return 0;
     }
@@ -826,15 +809,15 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
     if (req_clean == (uint32_t)VIDIOC_G_CTRL) {
         CHECK_ARG();
         struct v4l2_control *ctrl = (struct v4l2_control *)arg;
-        if (ctrl->id == 0x00980001 || ctrl->id == 0x009a0001) { errno = EINVAL; return -1; }
-        
+        if (ctrl->id == V4L2_CID_USER_CLASS || ctrl->id == V4L2_CID_CAMERA_CLASS) { errno = EINVAL; return -1; }
+
         uint32_t req_id = ctrl->id;
         IpcControlPayload response;
         memset(&response, 0, sizeof(response));
 
         if (shim_ipc_transaction(CMD_G_CTRL, &req_id, sizeof(uint32_t), &response, sizeof(IpcControlPayload)) != 0) return -1;
         if (response.id == 0) { errno = EINVAL; return -1; }
-        
+
         ctrl->value = response.value;
         return 0;
     }
@@ -842,8 +825,8 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
     if (req_clean == (uint32_t)VIDIOC_S_CTRL) {
         CHECK_ARG();
         struct v4l2_control *ctrl = (struct v4l2_control *)arg;
-        if (ctrl->id == 0x00980001 || ctrl->id == 0x009a0001) { errno = EINVAL; return -1; }
-        
+        if (ctrl->id == V4L2_CID_USER_CLASS || ctrl->id == V4L2_CID_CAMERA_CLASS) { errno = EINVAL; return -1; }
+
         IpcControlPayload payload = { .id = ctrl->id, .value = ctrl->value };
         int32_t ack = 0;
         if (shim_ipc_transaction(CMD_S_CTRL, &payload, sizeof(IpcControlPayload), &ack, sizeof(int32_t)) != 0) return -1;
@@ -867,8 +850,8 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         }
 
         if (ext->count == 0) {
-            if (ext->which != 0 && ext->which != V4L2_CTRL_WHICH_DEF_VAL && 
-                ext->which != 0x00980000 && ext->which != 0x009a0000) {
+            if (ext->which != 0 && ext->which != V4L2_CTRL_WHICH_DEF_VAL &&
+                ext->which != V4L2_CTRL_CLASS_USER && ext->which != V4L2_CTRL_CLASS_CAMERA) {
                 errno = EINVAL;
                 return -1;
             }
@@ -880,7 +863,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
             struct v4l2_ext_control *ctrl = &ext->controls[i];
             uint32_t req_id = ctrl->id;
 
-            // 3. Class validation: if ext->which specifies a class, all controls must belong to it
+            /* Validate control class membership */
             if (ext->which != 0 && ext->which != V4L2_CTRL_WHICH_DEF_VAL) {
                 if ((req_id & 0x0fff0000) != ext->which) {
                     ext->error_idx = (req_clean == (uint32_t)VIDIOC_TRY_EXT_CTRLS) ? i : ext->count;
@@ -889,15 +872,15 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
                 }
             }
 
-            // G_EXT_CTRLS on write-only classes
-            if (req_clean == (uint32_t)VIDIOC_G_EXT_CTRLS && (req_id == 0x00980001 || req_id == 0x009a0001)) {
+            /* Reject reading write-only class controls */
+            if (req_clean == (uint32_t)VIDIOC_G_EXT_CTRLS && (req_id == V4L2_CID_USER_CLASS || req_id == V4L2_CID_CAMERA_CLASS)) {
                 ext->error_idx = ext->count;
                 errno = EACCES;
                 return -1;
             }
 
-            // S_EXT_CTRLS or TRY_EXT_CTRLS on read-only controls (ROTATE, CLASSES)
-            if (req_id == 0x00980922 || req_id == 0x00980001 || req_id == 0x009a0001) {
+            /* Reject writing read-only controls */
+            if (req_id == V4L2_CID_ROTATE || req_id == V4L2_CID_USER_CLASS || req_id == V4L2_CID_CAMERA_CLASS) {
                if (req_clean == (uint32_t)VIDIOC_S_EXT_CTRLS) {
                     ext->error_idx = ext->count;
                     errno = EACCES;
@@ -916,10 +899,10 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
 
                 if (shim_ipc_transaction(CMD_G_CTRL, &req_id, sizeof(uint32_t), &response, sizeof(IpcControlPayload)) != 0) {
                     ext->error_idx = (req_clean == (uint32_t)VIDIOC_TRY_EXT_CTRLS) ? i : ext->count;
-                    return -1; 
+                    return -1;
                 }
                 if (req_clean == (uint32_t)VIDIOC_G_EXT_CTRLS) ctrl->value = response.value;
-            } 
+            }
             else if (req_clean == (uint32_t)VIDIOC_S_EXT_CTRLS) {
                 IpcControlPayload payload = { .id = ctrl->id, .value = ctrl->value };
                 int32_t ack = 0;
@@ -929,7 +912,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
                 }
             }
         }
-        
+
         ext->error_idx = 0;
         return 0;
     }
@@ -993,19 +976,19 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         menu->reserved = 0;
 
         if (menu->id == V4L2_CID_EXPOSURE_AUTO) {
-            if (menu->index == 0) { 
-                strcpy((char*)menu->name, "Auto Mode"); 
-                return 0; 
+            if (menu->index == 0) {
+                strcpy((char*)menu->name, "Auto Mode");
+                return 0;
             }
-            if (menu->index == 1) { 
-                strcpy((char*)menu->name, "Manual Mode"); 
-                return 0; 
+            if (menu->index == 1) {
+                strcpy((char*)menu->name, "Manual Mode");
+                return 0;
             }
         }
         errno = EINVAL;
         return -1;
     }
-    
+
     if (req_clean == (uint32_t)VIDIOC_SUBSCRIBE_EVENT) {
         CHECK_ARG();
         return shim_v4l2_subscribe_event(fd, (struct v4l2_event_subscription *)arg);
@@ -1022,7 +1005,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
     }
 
     if (req_clean == (uint32_t)VIDIOC_G_STD || req_clean == (uint32_t)VIDIOC_S_STD || req_clean == (uint32_t)VIDIOC_ENUMSTD) {
-        errno = EINVAL; 
+        errno = EINVAL;
         return -1;
     }
 
@@ -1030,6 +1013,6 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         return 0;
     }
 
-    errno = ENOTTY; 
+    errno = ENOTTY;
     return -1;
 }

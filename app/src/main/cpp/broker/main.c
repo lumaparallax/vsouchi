@@ -84,7 +84,7 @@ void* router_thread_func(void* arg) {
         struct msghdr msg = {0};
         struct iovec iov[1] = {{ &hdr, sizeof(IpcInboundHeader) }};
         msg.msg_iov = iov; msg.msg_iovlen = 1;
-        
+
         char cmsg_buf[CMSG_SPACE(32 * sizeof(int))] = {0};
         msg.msg_control = cmsg_buf; msg.msg_controllen = sizeof(cmsg_buf);
 
@@ -187,7 +187,7 @@ JNIEXPORT jint JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_nativeGet
     pthread_mutex_unlock(&g_bridge_tx_mutex);
 
     printf("[Broker] Reconnected to vSouchi Android App (Bridge FD %d)!\n", g_bridge_fd);
-    return sv[1]; 
+    return sv[1];
 }
 
 JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNIEnv *env, jclass clazz) {
@@ -204,7 +204,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
     snprintf(path, sizeof(path), "%s/sys/class/video4linux", base_dir); mkdir(path, 0777);
 
     // Create empty file so target apps don't skip the node
-    snprintf(path, sizeof(path), "%s/sys/class/video4linux/video0", base_dir); 
+    snprintf(path, sizeof(path), "%s/sys/class/video4linux/video0", base_dir);
     int dummy_fd = open(path, O_CREAT | O_RDWR, 0666);
     if (dummy_fd >= 0) close(dummy_fd);
 
@@ -217,7 +217,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
-    
+
     bind(server_fd, (struct sockaddr*)&addr, sizeof(addr));
     listen(server_fd, 10);
 
@@ -239,7 +239,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
                     ctx->fatal_error = 0;
                     ctx->fd_count = 0;
                     ctx->fd_send_index = 0;
-                    
+
                     pthread_mutex_init(&ctx->lock, NULL);
                     pthread_cond_init(&ctx->cond, NULL);
                     break;
@@ -254,7 +254,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
                 pthread_detach(clerk_tid);
             } else {
                 printf("[Broker] Max clients reached. Rejecting connection.\n");
-                close(new_fd); 
+                close(new_fd);
             }
         }
     }

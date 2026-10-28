@@ -40,7 +40,7 @@
 #define CMD_G_CTRL     0x31
 #define CMD_S_CTRL     0x32
 
-#define BROKER_NACK_EBUSY 0xEE 
+#define BROKER_NACK_EBUSY 0xEE
 
 typedef struct {
     uint32_t magic;
@@ -76,16 +76,16 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     uint32_t pixelformat;
-    uint32_t field;       
+    uint32_t field;
     uint32_t bytesperline;
     uint32_t sizeimage;
-    uint32_t colorspace;  
+    uint32_t colorspace;
 } IpcV4l2Format;
 
 typedef struct {
     uint32_t index;
     uint32_t pixel_format;
-    uint32_t type;   
+    uint32_t type;
     uint32_t width;
     uint32_t height;
     uint32_t reserved[4];
@@ -96,7 +96,7 @@ typedef struct {
     uint32_t pixel_format;
     uint32_t width;
     uint32_t height;
-    uint32_t type;   
+    uint32_t type;
     uint32_t fps_numerator;
     uint32_t fps_denominator;
     uint32_t reserved[4];

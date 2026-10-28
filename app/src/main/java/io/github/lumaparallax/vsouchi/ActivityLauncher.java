@@ -58,7 +58,7 @@ public class ActivityLauncher {
     private static void startActivityManual(Intent intent) {
         try {
             // Dynamically fetch the package name of the shell environment host
-            String packageName = "android"; 
+            String packageName = "android";
             try {
                  String[] pkgs = android.app.ActivityThread.getPackageManager().getPackagesForUid(getuid());
                  if (pkgs != null && pkgs.length > 0) packageName = pkgs[0];

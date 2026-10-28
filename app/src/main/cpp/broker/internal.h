@@ -19,7 +19,7 @@ typedef struct {
     int client_fd;
     pthread_mutex_t lock;
     pthread_cond_t cond;
-    
+
     int32_t resp_status;
     uint32_t resp_size;
     char resp_payload[MAX_PAYLOAD];

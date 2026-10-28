@@ -66,7 +66,7 @@ int shim_ipc_transaction(uint32_t cmd, const void* req_payload, size_t req_sz, v
     iov[0].iov_base = &cmd;
     iov[0].iov_len = sizeof(uint32_t);
     int count = 1;
-    
+
     if (req_payload && req_sz > 0) {
         iov[1].iov_base = (void*)req_payload;
         iov[1].iov_len = req_sz;
@@ -113,23 +113,23 @@ int recv_single_fd(int socket) {
     struct iovec io = { .iov_base = m_buffer, .iov_len = 1 };
     msg.msg_iov = &io;
     msg.msg_iovlen = 1;
-    
+
     char c_buffer[CMSG_SPACE(sizeof(int))];
     memset(c_buffer, 0, sizeof(c_buffer));
     msg.msg_control = c_buffer;
     msg.msg_controllen = sizeof(c_buffer);
-    
+
     int res = recvmsg(socket, &msg, 0);
     if (res < 0) {
         LOGI("recvmsg failed! errno: %d", errno);
         return -1;
     }
-    
+
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
     if (cmsg && cmsg->cmsg_len == CMSG_LEN(sizeof(int))) {
         return *((int *)CMSG_DATA(cmsg));
     }
-    
+
     LOGI("recvmsg succeeded but cmsg was missing or invalid!");
     return -1;
 }

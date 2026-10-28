@@ -58,7 +58,7 @@ static uint32_t get_real_kernel_version() {
         sscanf(un.release, "%d.%d.%d", &major, &minor, &rev);
         return KERNEL_VERSION(major, minor, rev);
     }
-    return KERNEL_VERSION(5, 10, 0); 
+    return KERNEL_VERSION(5, 10, 0);
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
@@ -138,7 +138,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
             v4l2_cleanup();
             break;
         }
-        
+
         int signal = v4l2_handle_command(socket_fd, req.client_fd, req.cmd, g_device_name, g_kernel_version);
         if (signal < 0) {
             (*env)->CallVoidMethod(env, thiz, method_onStreamOff);
@@ -147,15 +147,15 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
             break;
         }
 
-        if (signal == 1) { 
-            (*env)->CallVoidMethod(env, thiz, method_onStreamOn, 
-                                   v4l2_get_width(), v4l2_get_height(), 
+        if (signal == 1) {
+            (*env)->CallVoidMethod(env, thiz, method_onStreamOn,
+                                   v4l2_get_width(), v4l2_get_height(),
                                    v4l2_get_fps(), v4l2_get_android_format());
-        } else if (signal == 2) { 
+        } else if (signal == 2) {
             (*env)->CallVoidMethod(env, thiz, method_onStreamOff);
-        } else if (signal == 3) { 
+        } else if (signal == 3) {
             (*env)->CallVoidMethod(env, thiz, method_onDisconnect);
-        } else if (signal == 4) { 
+        } else if (signal == 4) {
             (*env)->CallVoidMethod(env, thiz, method_onSetControl, g_last_ctrl_id, g_last_ctrl_val);
         } else if (signal == 5) {
             (*env)->CallVoidMethod(env, thiz, method_onSelectInput, g_active_camera_idx);

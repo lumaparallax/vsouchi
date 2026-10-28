@@ -49,7 +49,7 @@ void* clerk_thread_func(void* arg) {
     while (1) {
         char buf[MAX_PAYLOAD];
         int n = read(client_fd, buf, sizeof(buf));
-        
+
         if (n <= 0) {
             goto cleanup;
         }
@@ -65,41 +65,38 @@ void* clerk_thread_func(void* arg) {
 
             if (fd_to_send >= 0) {
                 struct msghdr out_msg = {0};
-                char dummy = 'R'; 
+                char dummy = 'R';
                 struct iovec out_iov[1] = {{ &dummy, 1 }};
                 char out_cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
                 out_msg.msg_iov = out_iov; out_msg.msg_iovlen = 1;
                 out_msg.msg_control = out_cmsg_buf; out_msg.msg_controllen = sizeof(out_cmsg_buf);
-                
+
                 struct cmsghdr *out_cmsg = CMSG_FIRSTHDR(&out_msg);
                 out_cmsg->cmsg_level = SOL_SOCKET; out_cmsg->cmsg_type = SCM_RIGHTS;
                 out_cmsg->cmsg_len = CMSG_LEN(sizeof(int));
                 *((int *)CMSG_DATA(out_cmsg)) = fd_to_send;
-                
+
                 sendmsg(client_fd, &out_msg, 0);
-                close(fd_to_send); // Close broker's kernel-duplicated copy
+                close(fd_to_send); // Close local descriptor after passing via SCM_RIGHTS
             }
-            continue; 
+            continue;
         }
 
         if (n >= sizeof(uint32_t)) {
             uint32_t cmd = *(uint32_t*)buf;
 
-            // 1. Subsystem Monitor Hook (Validates hardware/stream locks)
             if (subsystem_validate_command(client_fd, cmd) < 0) {
-                int32_t ebusy = -16;
+                int32_t ebusy = -EBUSY;
                 write(client_fd, &ebusy, sizeof(int32_t));
-                continue; 
+                continue;
             }
 
-            // Ensure Android APK bridge is alive (triggers on-demand wake if dead)
             if (broker_ensure_bridge() < 0) {
-                int32_t enodev = -19;
+                int32_t enodev = -ENODEV;
                 write(client_fd, &enodev, sizeof(int32_t));
                 continue;
             }
 
-            // 2. Forward securely to Bridge
             IpcOutboundHeader hdr = { .client_fd = client_fd, .cmd = cmd };
             pthread_mutex_lock(&g_bridge_tx_mutex);
             if (g_bridge_fd < 0) {
@@ -114,12 +111,11 @@ void* clerk_thread_func(void* arg) {
             writev(g_bridge_fd, iov, (iov[1].iov_len > 0) ? 2 : 1);
             pthread_mutex_unlock(&g_bridge_tx_mutex);
 
-            // 3. Sleep until Router wakes us
             pthread_mutex_lock(&ctx->lock);
             while (!ctx->response_ready && !ctx->fatal_error) {
                 pthread_cond_wait(&ctx->cond, &ctx->lock);
             }
-            
+
             if (ctx->fatal_error) {
                 pthread_mutex_unlock(&ctx->lock);
                 int32_t enodev = -19;
@@ -127,7 +123,6 @@ void* clerk_thread_func(void* arg) {
                 break;
             }
 
-            // 4. Reply to Shim
             struct iovec riov[2];
             riov[0].iov_base = &ctx->resp_status; riov[0].iov_len = sizeof(int32_t);
             riov[1].iov_base = ctx->resp_payload; riov[1].iov_len = ctx->resp_size;
@@ -139,7 +134,6 @@ void* clerk_thread_func(void* arg) {
 
     }
 cleanup:
-     // Ensure socket cleanup runs on both client EOF and bridge fatal error
     printf("[Broker] Shim (FD %d) cleaned up.\n", client_fd);
     subsystem_handle_disconnect(client_fd);
 

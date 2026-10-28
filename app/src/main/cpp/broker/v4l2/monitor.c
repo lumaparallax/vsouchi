@@ -27,7 +27,7 @@ static void* disconnect_watchdog_func(void* arg) {
 
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_nsec += 500000000; // Add 500ms
+        ts.tv_nsec += 500000000;
         if (ts.tv_nsec >= 1000000000) {
             ts.tv_sec += 1;
             ts.tv_nsec -= 1000000000;
@@ -35,7 +35,7 @@ static void* disconnect_watchdog_func(void* arg) {
 
         int rc = pthread_cond_timedwait(&g_watchdog_cond, &g_watchdog_mutex, &ts);
 
-        // If timed out AND teardown wasn't aborted by a reconnect, kill the hardware
+        /* Teardown hardware on watchdog expiry if reconnect did not abort */
         if (rc == ETIMEDOUT && g_watchdog_pending == 1) {
             printf("[Broker/V4L2] 500ms elapsed. Issuing hardware teardown.\n");
             g_watchdog_pending = 0;
@@ -70,7 +70,6 @@ int subsystem_validate_command(int client_fd, uint32_t cmd) {
             g_stream_owner_fd = client_fd;
             printf("[Broker/V4L2] Shim %d acquired hardware stream lock.\n", client_fd);
 
-            // Abort any pending hardware teardowns
             pthread_mutex_lock(&g_watchdog_mutex);
             g_watchdog_pending = 0;
             pthread_cond_signal(&g_watchdog_cond);
@@ -78,7 +77,7 @@ int subsystem_validate_command(int client_fd, uint32_t cmd) {
 
         } else if (g_stream_owner_fd != -1 && g_stream_owner_fd != client_fd) {
             pthread_mutex_unlock(&g_state_mutex);
-            return -1; // Reject (EBUSY)
+            return -1;
         }
     }
     pthread_mutex_unlock(&g_state_mutex);

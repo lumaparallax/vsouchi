@@ -21,14 +21,14 @@ public class CameraEngine {
     private final Context context;
     private final NativeBridge bridge;
     private final CaptureSessionController sessionController;
-    
+
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
-    private Surface activeSurface; 
-    
+    private Surface activeSurface;
+
     private HandlerThread backgroundThread;
     private Handler backgroundHandler;
-    
+
     private volatile boolean isStreaming = false;
     private volatile boolean isCameraBooting = false;
     private int activeWidth = 0;
@@ -72,7 +72,7 @@ public class CameraEngine {
     @SuppressLint("MissingPermission")
     public synchronized void start(int width, int height, int fps, int format) {
         if (isStreaming && width == activeWidth && height == activeHeight && fps == activeFps && format == activeFormat) return;
-        isStreaming = false; 
+        isStreaming = false;
 
         if (backgroundThread == null) {
             backgroundThread = new HandlerThread("CameraThread");
@@ -90,7 +90,7 @@ public class CameraEngine {
         if (needsNewReader) {
             bridge.nativeDestroyImageReader();
             activeSurface = bridge.nativeCreateImageReader(width, height, format, 4);
-            
+
             if (activeSurface == null) {
                 Logger.e(TAG, "FATAL: C-Bridge failed to allocate NDK ImageReader!", null);
                 return;
@@ -103,23 +103,23 @@ public class CameraEngine {
 
             if (cameraDevice != null) {
                 if (captureSession != null) {
-                    try { 
+                    try {
                         captureSession.stopRepeating();
-                        captureSession.abortCaptures(); 
-                        captureSession.close(); 
+                        captureSession.abortCaptures();
+                        captureSession.close();
                     } catch (Exception ignored) {}
                     captureSession = null;
                 }
-                createSession(); 
+                createSession();
             }
 
         } else if (cameraDevice != null && captureSession != null) {
-            activeFps = fps; 
+            activeFps = fps;
             sessionController.updateRepeatingRequest(cameraDevice, activeSurface, activeFps, captureSession, backgroundHandler);
         }
 
         if (cameraDevice == null) {
-            if (isCameraBooting) return; 
+            if (isCameraBooting) return;
             isCameraBooting = true;
             try {
                 CameraManager manager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -152,23 +152,23 @@ public class CameraEngine {
                             createSession();
                         }
                     }
-                    @Override public void onDisconnected(CameraDevice c) { 
+                    @Override public void onDisconnected(CameraDevice c) {
                         synchronized (CameraEngine.this) {
-                            isCameraBooting = false; 
+                            isCameraBooting = false;
                             c.close(); cameraDevice = null;
                         }
                     }
-                    @Override public void onError(CameraDevice c, int e) { 
+                    @Override public void onError(CameraDevice c, int e) {
                         synchronized (CameraEngine.this) {
-                            isCameraBooting = false; 
+                            isCameraBooting = false;
                             c.close(); cameraDevice = null;
                         }
                     }
                 }, backgroundHandler);
             } catch (Exception e) { isCameraBooting = false; }
         }
-        
-        isStreaming = true; 
+
+        isStreaming = true;
     }
 
     private synchronized void createSession() {
@@ -192,8 +192,8 @@ public class CameraEngine {
                     Logger.e(TAG, "Hardware REJECTED the session!", null);
                 }
             }, backgroundHandler);
-        } catch (Exception e) { 
-            Logger.e(TAG, "Session creation failed", e); 
+        } catch (Exception e) {
+            Logger.e(TAG, "Session creation failed", e);
         }
     }
 
@@ -208,7 +208,7 @@ public class CameraEngine {
         if (captureSession != null) {
             try {
                 captureSession.stopRepeating();
-                captureSession.abortCaptures(); 
+                captureSession.abortCaptures();
             } catch (Exception ignored) {}
         }
     }
@@ -216,17 +216,17 @@ public class CameraEngine {
     public synchronized void destroy() {
         isStreaming = false;
 
-        if (captureSession != null) { 
+        if (captureSession != null) {
             try { captureSession.stopRepeating(); captureSession.abortCaptures(); } catch (Exception ignored) {}
             try { captureSession.close(); } catch (Exception ignored) {}
-            captureSession = null; 
+            captureSession = null;
         }
 
         if (cameraDevice != null) { cameraDevice.close(); cameraDevice = null; }
-        
+
         bridge.nativeDestroyImageReader();
         activeSurface = null;
-        
+
         if (backgroundThread != null) {
             backgroundThread.quitSafely();
             try { backgroundThread.join(500); } catch (Exception ignored) {}

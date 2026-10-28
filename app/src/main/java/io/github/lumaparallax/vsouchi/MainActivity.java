@@ -35,17 +35,17 @@ public class MainActivity extends Activity implements PermissionsHelper.Permissi
                     try {
                         IBridgeBinder bridgeBinder = IBridgeBinder.Stub.asInterface(binder);
                         ParcelFileDescriptor pfd = bridgeBinder.socketPairFD();
-                        
+
                         if (pfd != null) {
                             // Detach FD immediately so it survives Activity destruction and garbage collection.
-                            int apkSocketFd = pfd.detachFd(); 
+                            int apkSocketFd = pfd.detachFd();
                             Logger.i(TAG, "Extracted Socket FD: " + apkSocketFd + ". Checking permissions...");
 
                             pendingServiceIntent = new Intent(this, ForegroundService.class);
                             pendingServiceIntent.putExtra("socket_fd", apkSocketFd);
-                            
+
                             PermissionsHelper.checkAndRequest(this, this);
-                            return; 
+                            return;
                         }
                     } catch (Exception e) {
                         Logger.e(TAG, "Binder transaction failed", e);
@@ -53,7 +53,7 @@ public class MainActivity extends Activity implements PermissionsHelper.Permissi
                 }
             }
             finish();
-            
+
         } else {
             TextView tv = new TextView(this);
             tv.setText("vSouchi IPC Framework\nLaunch via shell environment.");
@@ -70,7 +70,7 @@ public class MainActivity extends Activity implements PermissionsHelper.Permissi
     public void onPermissionsGranted() {
         if (pendingServiceIntent != null) {
             try {
-                // startForegroundService grants a legal 5-second grace period for the background service 
+                // startForegroundService grants a legal 5-second grace period for the background service
                 // to post its notification even after this Activity calls finish() and dies.
                 if (Build.VERSION.SDK_INT >= 26) {
                     startForegroundService(pendingServiceIntent);
@@ -87,7 +87,7 @@ public class MainActivity extends Activity implements PermissionsHelper.Permissi
     @Override
     public void onPermissionsDenied() {
         Toast.makeText(this, "Camera and Notification permissions are required!", Toast.LENGTH_LONG).show();
-        finish(); 
+        finish();
     }
 
     @Override

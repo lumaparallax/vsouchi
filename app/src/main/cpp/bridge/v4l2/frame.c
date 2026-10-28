@@ -51,16 +51,16 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
     uint32_t seq = __atomic_fetch_add(&g_frame_sequence, 1, __ATOMIC_RELAXED);
 
     int index = v4l2_get_queued_index();
-    if (index == -1 || !v4l2_is_buffer_ready_for_write(index)) { 
-        AImage_delete(image); 
-        return; 
+    if (index == -1 || !v4l2_is_buffer_ready_for_write(index)) {
+        AImage_delete(image);
+        return;
     }
 
     uint8_t* payload = (uint8_t*)v4l2_get_buffer_ptr(index);
-    if (!payload) { 
+    if (!payload) {
         v4l2_abort_write(index);
-        AImage_delete(image); 
-        return; 
+        AImage_delete(image);
+        return;
     }
 
     int android_fmt = v4l2_get_android_format();
@@ -69,10 +69,10 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
         uint8_t* data = NULL;
         int data_length = 0;
         AImage_getPlaneData(image, 0, &data, &data_length);
-        
+
         uint32_t max_capacity = v4l2_get_buffer_size(index);
         uint32_t copy_sz = (data_length < max_capacity) ? (uint32_t)data_length : max_capacity;
-        
+
         memcpy(payload, data, copy_sz);
         v4l2_set_buffer_bytesused(index, copy_sz);
 
@@ -204,7 +204,7 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
                 I420ToYUY2(src_y, width, src_u, width / 2, src_v, width / 2,
                            payload, target_w * 2, target_w, target_h);
                 v4l2_set_buffer_bytesused(index, target_w * target_h * 2);
-            } 
+            }
             else if (fmt == v4l2_fourcc('N', 'V', '1', '2')) {
                 I420ToNV12(src_y, width, src_u, width / 2, src_v, width / 2,
                            payload, target_w, payload + (target_w * target_h), target_w,
@@ -221,7 +221,7 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
                 uint8_t* out_y = payload;
                 uint8_t* out_u = payload + (target_w * target_h);
                 uint8_t* out_v = out_u + ((target_w * target_h) / 4);
-                
+
                 if (fmt == v4l2_fourcc('Y', 'V', '1', '2')) {
                     uint8_t* swap = out_u; out_u = out_v; out_v = swap;
                 }
@@ -248,7 +248,7 @@ JNIEXPORT jobject JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_
     // AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN ensures the GPU allocator avoids tiled formats
     // so we can read the memory linearly without costly format conversions on the CPU.
     uint64_t usage = AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN;
-    
+
     media_status_t status = AImageReader_newWithUsage(width, height, format, usage, max_images, &g_ndk_reader);
     if (status != AMEDIA_OK || g_ndk_reader == NULL) {
         LOGE("AImageReader allocation failed! Status: %d", status);
@@ -262,7 +262,7 @@ JNIEXPORT jobject JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_
 
     ANativeWindow* native_window = NULL;
     AImageReader_getWindow(g_ndk_reader, &native_window);
-    
+
     if (native_window == NULL) {
         LOGE("Failed to get ANativeWindow from AImageReader!");
         return NULL;

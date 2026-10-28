@@ -22,6 +22,7 @@
 #include <sys/ioctl.h>
 #include <sys/eventfd.h>
 #include <dirent.h>
+#include <linux/videodev2.h>
 #include "shim/internal.h"
 #include "shim/log.h"
 #include "vsouchi_ipc.h"
@@ -42,7 +43,7 @@ int g_shim_memfds[16] = {
     -1, -1, -1, -1, -1, -1, -1, -1
 };
 int g_broker_fd = -1;
-static int g_open_count = 0; 
+static int g_open_count = 0;
 
 int (*real_open)(const char *pathname, int flags, ...) = NULL;
 int (*real_open64)(const char *pathname, int flags, ...) = NULL;
@@ -83,7 +84,7 @@ void shim_clear_memfds() {
 }
 
 __attribute__((constructor)) void init_pointers(void) {
-    if (real_open) return; 
+    if (real_open) return;
     real_open = dlsym(RTLD_NEXT, "open");
     real_open64 = dlsym(RTLD_NEXT, "open64");
     real_openat = dlsym(RTLD_NEXT, "openat");
@@ -111,7 +112,6 @@ __attribute__((constructor)) void init_pointers(void) {
     real_fopen64 = dlsym(RTLD_NEXT, "fopen64");
 }
 
-// Forward libv4l2 mmap variant to 64-bit offset handler
 void *v4l2_mmap(void *addr, size_t length, int prot, int flags, int fd, int64_t offset) {
     return mmap64(addr, length, prot, flags, fd, (off64_t)offset);
 }
@@ -127,7 +127,6 @@ static inline int is_potential_v4l2_path(const char* path) {
                     strncmp(path, "/sys/class/video4linux", 22) == 0);
         }
     } else {
-        // Relative paths (e.g. "video0" inside /dev)
         if (strncmp(path, "video", 5) == 0 && path[5] >= '0' && path[5] <= '9') return 1;
     }
     return 0;
@@ -152,7 +151,7 @@ static int get_virtual_sock_path(const char* pathname, char* out_path, size_t ma
     if (!pathname) return 0;
     const char* rel_node = NULL;
     if (strncmp(pathname, "/dev/video", 10) == 0 && pathname[10] >= '0' && pathname[10] <= '9') {
-        rel_node = pathname + 5; // "videoX"
+        rel_node = pathname + 5;
     } else if (strncmp(pathname, "video", 5) == 0 && pathname[5] >= '0' && pathname[5] <= '9') {
         rel_node = pathname;
     } else {
@@ -227,7 +226,6 @@ static int connect_to_broker(const char* pathname, int flags) {
         return -1;
     }
 
-    // Only set EFD_NONBLOCK if the caller explicitly requested O_NONBLOCK
     int eflags = EFD_CLOEXEC | EFD_SEMAPHORE;
     if (flags & O_NONBLOCK) {
         eflags |= EFD_NONBLOCK;
@@ -239,7 +237,7 @@ static int connect_to_broker(const char* pathname, int flags) {
         return -1;
     }
 
-    int dummy_fd = fcntl(raw_fd, F_DUPFD, 10); 
+    int dummy_fd = fcntl(raw_fd, F_DUPFD, 10);
     if (real_close) real_close(raw_fd);
     else close(raw_fd);
 
@@ -254,15 +252,15 @@ static int connect_to_broker(const char* pathname, int flags) {
         g_vsouchi_fd_flags[dummy_fd] = flags;
     }
     g_open_count++;
-    
+
     pthread_mutex_unlock(&g_ipc_mutex);
     return dummy_fd;
 }
 
-// --- VIRTUAL STAT GENERATORS ---
+/* Virtual stat helpers */
 static int fill_virtual_videodev_stat(struct stat *st, int minor) {
     memset(st, 0, sizeof(*st));
-    st->st_mode = S_IFCHR | 0666; 
+    st->st_mode = S_IFCHR | 0666;
     st->st_rdev = makedev(81, minor);
     st->st_uid = getuid();
     st->st_gid = getgid();
@@ -271,14 +269,14 @@ static int fill_virtual_videodev_stat(struct stat *st, int minor) {
 
 static int fill_virtual_videodev_stat64(struct stat64 *st, int minor) {
     memset(st, 0, sizeof(*st));
-    st->st_mode = S_IFCHR | 0666; 
+    st->st_mode = S_IFCHR | 0666;
     st->st_rdev = makedev(81, minor);
     st->st_uid = getuid();
     st->st_gid = getgid();
     return 0;
 }
 
-// --- HELPER: VIRTUAL SYSFS UEVENT ---
+/* Virtual sysfs uevent helper */
 static int provide_virtual_uevent(int minor) {
     const char* base_dir = vsouchi_get_vdev_path();
     char tmp_path[256];
@@ -296,9 +294,7 @@ static int provide_virtual_uevent(int minor) {
     return -1;
 }
 
-// ==========================================
-// INTERCEPTORS: DIRECTORY READING
-// ==========================================
+/* Directory interceptors */
 DIR *opendir(const char *name) {
     init_pointers();
     if (name && strncmp(name, "/sys/class/video4linux", 22) == 0) {
@@ -311,9 +307,7 @@ DIR *opendir(const char *name) {
     return real_opendir ? real_opendir(name) : NULL;
 }
 
-// ==========================================
-// INTERCEPTORS: STAT FAMILY
-// ==========================================
+/* Stat interceptors */
 int stat(const char *pathname, struct stat *statbuf) {
     init_pointers();
     if (!is_potential_v4l2_path(pathname)) return real_stat ? real_stat(pathname, statbuf) : -1;
@@ -375,15 +369,13 @@ int access(const char *pathname, int mode) {
     return real_access ? real_access(pathname, mode) : -1;
 }
 
-// ==========================================
-// INTERCEPTORS: OPEN FAMILY
-// ==========================================
+/* Open interceptors */
 int open(const char *pathname, int flags, ...) {
     init_pointers();
     mode_t mode = 0;
     if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); }
     if (!is_potential_v4l2_path(pathname)) return real_open ? real_open(pathname, flags, mode) : -1;
-    
+
     const char* sys_char = (strncmp(pathname, "/sys/dev/char/81:", 17) == 0) ? pathname : NULL;
     if (sys_char) {
         int minor = atoi(sys_char + 17);
@@ -518,9 +510,7 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
     return real_openat64 ? real_openat64(dirfd, pathname, flags, mode) : -1;
 }
 
-// ==========================================
-// INTERCEPTORS: SYSFS TOPOLOGY & STANDARD IO
-// ==========================================
+/* Sysfs topology and standard I/O interceptors */
 ssize_t readlink(const char *pathname, char *buf, size_t bufsiz) {
     init_pointers();
     if (pathname && (strncmp(pathname, "/sys/dev/char/81:", 17) == 0 ||
@@ -570,10 +560,9 @@ int close(int fd) {
 
         pthread_mutex_lock(&g_ipc_mutex);
 
-        // Minor-aware teardown: if this descriptor owns streaming on its node, cleanly stop it
         if (shim_v4l2_check_and_clear_buffer_owner(fd)) {
             if (g_broker_fd != -1) {
-                int type = 1; // V4L2_BUF_TYPE_VIDEO_CAPTURE
+                int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
                 uint32_t cmd = CMD_STREAMOFF;
                 struct iovec iov[2] = { { &cmd, sizeof(uint32_t) }, { &type, sizeof(int) } };
                 struct msghdr msg = { .msg_iov = iov, .msg_iovlen = 2 };
@@ -591,7 +580,7 @@ int close(int fd) {
         g_vsouchi_fd_flags[fd] = 0;
         g_open_count--;
         if (g_open_count < 0) g_open_count = 0;
-        
+
         if (g_open_count == 0 && g_broker_fd != -1) {
             real_close(g_broker_fd);
             g_broker_fd = -1;
@@ -610,7 +599,7 @@ int close(int fd) {
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
     init_pointers();
     if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
-        int index = offset / 0x1000000; 
+        int index = offset / 0x1000000;
         if (index >= 0 && index < 16 && g_shim_memfds[index] >= 0) {
              return real_mmap ? real_mmap(addr, length, prot, flags, g_shim_memfds[index], 0) : MAP_FAILED;
         }
@@ -641,7 +630,7 @@ int ioctl(int fd, ioctl_req_t request, ...) {
     if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
         return shim_v4l2_handle_ioctl(fd, (int)request, arg);
     }
-    
+
     return real_ioctl ? real_ioctl(fd, request, arg) : -1;
 }
 
@@ -663,13 +652,13 @@ long syscall(long number, ...) {
         if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
             return ioctl(fd, (ioctl_req_t)a2, (void *)a3);
         }
-    } 
+    }
     else if (number == SYS_mmap) {
-        int fd = (int)a5; 
+        int fd = (int)a5;
         if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
             return (long)mmap((void *)a1, (size_t)a2, (int)a3, (int)a4, fd, (off_t)a6);
         }
-    } 
+    }
     else if (number == SYS_openat) {
         const char *path = (const char *)a2;
         int flags = (int)a3;

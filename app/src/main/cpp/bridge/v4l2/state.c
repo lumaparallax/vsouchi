@@ -12,7 +12,6 @@
 #include <sys/mman.h>
 #include <linux/memfd.h>
 #include <sys/syscall.h>
-#include <sys/syscall.h>
 #include <pthread.h>
 #include <sys/uio.h>
 #include <time.h>
@@ -64,11 +63,11 @@ int g_supported_format_count = 0;
 ResolutionMap g_resolutions[256];
 int g_res_count = 0;
 
-uint32_t g_current_width = 1920; 
+uint32_t g_current_width = 1920;
 uint32_t g_current_height = 1080;
 uint32_t g_current_fps = 30;
 uint32_t g_current_format = v4l2_fourcc('N', 'V', '1', '2');
-int g_current_android_format = 35; 
+int g_current_android_format = 35;
 
 int g_buffer_fds[MAX_BUFFERS] = {-1, -1, -1, -1, -1, -1, -1, -1};
 uint32_t g_buffer_lengths[MAX_BUFFERS] = {0};
@@ -108,32 +107,32 @@ static pthread_t g_worker_tid;
 static volatile int g_worker_running = 0;
 
 uint32_t get_correct_colorspace(uint32_t width, uint32_t height) {
-    if (width >= 1280 || height >= 720) return 8; // V4L2_COLORSPACE_REC709
-    return 1; // V4L2_COLORSPACE_SMPTE170M
+    if (width >= 1280 || height >= 720) return V4L2_COLORSPACE_REC709;
+    return V4L2_COLORSPACE_SMPTE170M;
 }
 
 uint32_t v4l2_get_current_frame_size() {
     if (g_current_format == V4L2_PIX_FMT_MJPEG) {
-        return g_current_width * g_current_height; 
+        return g_current_width * g_current_height;
     } else if (g_current_format == v4l2_fourcc('R', 'G', '1', '6') ||
                g_current_format == v4l2_fourcc('G', 'R', '1', '6') ||
                g_current_format == v4l2_fourcc('G', 'B', '1', '6') ||
                g_current_format == v4l2_fourcc('B', 'G', '1', '6') ||
                g_current_format == v4l2_fourcc('Y', 'U', 'Y', 'V')) {
-        return g_current_width * g_current_height * 2; 
+        return g_current_width * g_current_height * 2;
     }
-    return (g_current_width * g_current_height * 3) / 2; 
+    return (g_current_width * g_current_height * 3) / 2;
 }
 
 uint32_t get_max_fps_for_res(uint32_t w, uint32_t h) {
     for (int i = 0; i < g_res_count; i++) {
-        if (g_resolutions[i].android_format == g_current_android_format && 
-            g_resolutions[i].width == w && 
+        if (g_resolutions[i].android_format == g_current_android_format &&
+            g_resolutions[i].width == w &&
             g_resolutions[i].height == h) {
             return g_resolutions[i].max_fps;
         }
     }
-    return 30; 
+    return 30;
 }
 
 void v4l2_clear_cameras(void) {
@@ -327,21 +326,21 @@ uint32_t v4l2_get_current_format() { return g_current_format; }
 int v4l2_get_fps() { return g_current_fps; }
 
 void v4l2_send_reply(int socket_fd, uint32_t client_fd, int32_t status, void* payload, uint32_t sz) {
-    IpcInboundHeader hdr = { 
-        .client_fd = client_fd, 
-        .payload_size = sz, 
-        .ipc_status = status 
+    IpcInboundHeader hdr = {
+        .client_fd = client_fd,
+        .payload_size = sz,
+        .ipc_status = status
     };
-    
+
     struct iovec iov[2];
     iov[0].iov_base = &hdr; iov[0].iov_len = sizeof(IpcInboundHeader);
     int count = 1;
-    
+
     if (payload && sz > 0) {
         iov[1].iov_base = payload; iov[1].iov_len = sz;
         count = 2;
     }
-    
+
     pthread_mutex_lock(&g_bridge_tx_mutex);
     writev(socket_fd, iov, count);
     pthread_mutex_unlock(&g_bridge_tx_mutex);
@@ -379,12 +378,12 @@ void v4l2_free_buffers() {
             munmap(g_buffer_ptrs[i], g_buffer_lengths[i]);
             g_buffer_ptrs[i] = NULL;
         }
-        
+
         if (g_buffer_fds[i] >= 0) {
             close(g_buffer_fds[i]);
             g_buffer_fds[i] = -1;
         }
-       
+
         g_buffer_lengths[i] = 0;
         g_buffer_bytesused[i] = 0;
         g_buffer_sequence[i] = 0;
@@ -403,7 +402,7 @@ void v4l2_cleanup() {
         close(g_event_fd);
         g_event_fd = -1;
     }
-    
+
     pthread_mutex_lock(&g_v4l2_mutex);
     pthread_cond_broadcast(&g_v4l2_cond);
     pthread_mutex_unlock(&g_v4l2_mutex);
@@ -415,7 +414,7 @@ static void* persistent_dqbuf_worker(void* arg) {
         while (g_dq_count == 0 && g_worker_running) {
             pthread_cond_wait(&g_dq_cond, &g_dq_mutex);
         }
-        
+
         if (!g_worker_running && g_dq_count == 0) {
             pthread_mutex_unlock(&g_dq_mutex);
             break;
@@ -429,7 +428,7 @@ static void* persistent_dqbuf_worker(void* arg) {
         pthread_mutex_lock(&g_v4l2_mutex);
         int idx = -1;
         while (g_is_streaming) {
-            for (int i = 0; i < (int)g_buffer_count; i++) { 
+            for (int i = 0; i < (int)g_buffer_count; i++) {
                 int candidate = (s_next_read_idx + i) % (int)g_buffer_count;
                 if (g_buffer_state[candidate] == 2) {
                     idx = candidate;
@@ -438,19 +437,19 @@ static void* persistent_dqbuf_worker(void* arg) {
                 }
             }
             if (idx != -1) break;
-            pthread_cond_wait(&g_v4l2_cond, &g_v4l2_mutex); 
+            pthread_cond_wait(&g_v4l2_cond, &g_v4l2_mutex);
         }
 
         if (idx != -1) {
-            g_buffer_state[idx] = 0; 
-            req.buf.index = idx; 
+            g_buffer_state[idx] = 0;
+            req.buf.index = idx;
             req.buf.bytesused = g_buffer_bytesused[idx];
-            req.buf.length = g_buffer_lengths[idx]; 
-            req.buf.flags = 0x00002001; /* V4L2_BUF_FLAG_MAPPED | V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC */
+            req.buf.length = g_buffer_lengths[idx];
+            req.buf.flags = V4L2_BUF_FLAG_MAPPED | V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
             req.buf.sequence = g_buffer_sequence[idx];
             req.buf.timestamp_ns = g_buffer_timestamp[idx];
         } else {
-            req.buf.length = 0xFFFFFFFF; 
+            req.buf.length = 0xFFFFFFFF;
         }
         pthread_mutex_unlock(&g_v4l2_mutex);
 
@@ -466,10 +465,10 @@ void v4l2_queue_dqbuf_request(int socket_fd, uint32_t client_fd, IpcV4l2Buffer* 
         g_dq_queue[g_dq_tail].socket_fd = socket_fd;
         g_dq_queue[g_dq_tail].client_fd = client_fd;
         g_dq_queue[g_dq_tail].buf = *buf;
-        
+
         g_dq_tail = (g_dq_tail + 1) % DQ_QUEUE_SIZE;
         g_dq_count++;
-        pthread_cond_signal(&g_dq_cond); 
+        pthread_cond_signal(&g_dq_cond);
     } else {
         LOGE("CRITICAL: DQBUF Queue Overflow! App is requesting frames too fast.");
         overflow = 1;
@@ -507,7 +506,7 @@ int v4l2_is_buffer_ready_for_write(int index) {
     /* State 3 represents an active write lease */
     if (g_buffer_state[index] == 3 && g_is_streaming) ready = 1;
     pthread_mutex_unlock(&g_v4l2_mutex);
-    
+
     return ready;
 }
 
@@ -544,7 +543,7 @@ void v4l2_push_filled_buffer(int index) {
     pthread_mutex_lock(&g_v4l2_mutex);
     if (index >= 0 && index < (int)g_buffer_count) {
         if (g_is_streaming) {
-            g_buffer_state[index] = 2; 
+            g_buffer_state[index] = 2;
             if (g_event_fd >= 0) {
                 uint64_t val = 1;
                 write(g_event_fd, &val, sizeof(val));
@@ -589,4 +588,3 @@ void v4l2_set_buffer_meta(int index, uint32_t sequence, uint64_t timestamp_ns) {
         g_buffer_timestamp[index] = timestamp_ns;
     }
 }
-

@@ -125,12 +125,12 @@ public class CaptureSessionController {
             if (stateAeMode == CaptureRequest.CONTROL_AE_MODE_OFF) {
                 builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, stateExposureTime);
                 // Lock ISO to prevent flicker when forcing manual exposure
-                builder.set(CaptureRequest.SENSOR_SENSITIVITY, 200); 
+                builder.set(CaptureRequest.SENSOR_SENSITIVITY, 200);
             }
 
             captureSession.setRepeatingRequest(builder.build(), null, backgroundHandler);
-        } catch (Exception e) { 
-            Logger.e(TAG, "Failed to update repeating request", e); 
+        } catch (Exception e) {
+            Logger.e(TAG, "Failed to update repeating request", e);
         }
     }
 }

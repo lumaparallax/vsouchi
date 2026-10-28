@@ -385,17 +385,17 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         }
         else if (target_id == V4L2_CID_HFLIP) {
             qc.id = target_id;
-            qc.type = 2; 
+            qc.type = 2;
             strcpy((char*)qc.name, "Horizontal Flip");
             qc.minimum = 0; qc.maximum = 1; qc.step = 1; qc.default_value = g_sensor_hflip;
-            qc.flags = 0x0004;
+            qc.flags = 0;
         }
         else if (target_id == V4L2_CID_VFLIP) {
             qc.id = target_id;
-            qc.type = 2; 
+            qc.type = 2;
             strcpy((char*)qc.name, "Vertical Flip");
             qc.minimum = 0; qc.maximum = 1; qc.step = 1; qc.default_value = 0;
-            qc.flags = 0x0004;
+            qc.flags = 0;
         }
         else if (target_id == V4L2_CID_ROTATE) {
             qc.id = target_id;
@@ -466,7 +466,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         IpcControlPayload payload;
         if (read_exact(socket_fd, &payload, sizeof(payload)) != 0) return -1;
 
-        if (payload.id == V4L2_CID_ROTATE || payload.id == V4L2_CID_HFLIP || payload.id == V4L2_CID_VFLIP) {
+        if (payload.id == V4L2_CID_ROTATE) {
             v4l2_send_error(socket_fd, client_fd, EACCES);
             return 0;
         }
@@ -474,7 +474,21 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         int valid_id = 0;
         int in_range = 0;
 
-        if (payload.id == V4L2_CID_FOCUS_AUTO) { 
+        if (payload.id == V4L2_CID_HFLIP) {
+            valid_id = 1;
+            if (payload.value >= 0 && payload.value <= 1) {
+                g_sensor_hflip = payload.value;
+                in_range = 1;
+            }
+        }
+        else if (payload.id == V4L2_CID_VFLIP) {
+            valid_id = 1;
+            if (payload.value >= 0 && payload.value <= 1) {
+                g_sensor_vflip = payload.value;
+                in_range = 1;
+            }
+        }
+        else if (payload.id == V4L2_CID_FOCUS_AUTO) { 
             valid_id = 1;
             if (payload.value >= 0 && payload.value <= 1) {
                 g_current_focus_auto = payload.value; 

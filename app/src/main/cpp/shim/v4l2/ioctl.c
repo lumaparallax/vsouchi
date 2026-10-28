@@ -854,14 +854,12 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         CHECK_ARG();
         struct v4l2_ext_controls *ext = (struct v4l2_ext_controls *)arg;
 
-        // 1. MIN_VAL, MAX_VAL, and REQUEST_VAL are unsupported by our controls -> return EINVAL per line 980
         if (ext->which == V4L2_CTRL_WHICH_MIN_VAL || ext->which == V4L2_CTRL_WHICH_MAX_VAL || ext->which == V4L2_CTRL_WHICH_REQUEST_VAL) {
             ext->error_idx = (req_clean == (uint32_t)VIDIOC_TRY_EXT_CTRLS) ? 0 : ext->count;
             errno = EINVAL;
             return -1;
         }
 
-        // 2. DEF_VAL cannot be set or tried -> return EINVAL per line 991
         if ((req_clean == (uint32_t)VIDIOC_S_EXT_CTRLS || req_clean == (uint32_t)VIDIOC_TRY_EXT_CTRLS) && ext->which == V4L2_CTRL_WHICH_DEF_VAL) {
             ext->error_idx = (req_clean == (uint32_t)VIDIOC_TRY_EXT_CTRLS) ? 0 : ext->count;
             errno = EINVAL;
@@ -893,21 +891,20 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
 
             // G_EXT_CTRLS on write-only classes
             if (req_clean == (uint32_t)VIDIOC_G_EXT_CTRLS && (req_id == 0x00980001 || req_id == 0x009a0001)) {
-                ext->error_idx = ext->count; // Expected by line 852
+                ext->error_idx = ext->count;
                 errno = EACCES;
                 return -1;
             }
 
-            // S_EXT_CTRLS or TRY_EXT_CTRLS on read-only controls
-            if (req_id == 0x00980914 || req_id == 0x00980915 || req_id == 0x00980922 ||
-                req_id == 0x00980001 || req_id == 0x009a0001) {
-                if (req_clean == (uint32_t)VIDIOC_S_EXT_CTRLS) {
-                    ext->error_idx = ext->count; // Expected by line 900 & line 1016
+            // S_EXT_CTRLS or TRY_EXT_CTRLS on read-only controls (ROTATE, CLASSES)
+            if (req_id == 0x00980922 || req_id == 0x00980001 || req_id == 0x009a0001) {
+               if (req_clean == (uint32_t)VIDIOC_S_EXT_CTRLS) {
+                    ext->error_idx = ext->count;
                     errno = EACCES;
                     return -1;
                 }
                 if (req_clean == (uint32_t)VIDIOC_TRY_EXT_CTRLS) {
-                    ext->error_idx = i; // Expected by line 889 & line 1010
+                    ext->error_idx = i;
                     errno = EACCES;
                     return -1;
                 }

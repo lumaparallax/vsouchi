@@ -31,6 +31,7 @@ extern long g_min_exposure, g_max_exposure;
 extern int g_current_focus_auto, g_current_focus_abs;
 extern int g_current_exposure_auto, g_current_exposure_abs;
 extern int g_last_ctrl_id, g_last_ctrl_val;
+extern int g_sensor_orientation, g_sensor_hflip, g_sensor_vflip;
 
 // Bypasses standard malloc. Tries Android's ASharedMemory first for zero-copy GPU compatibility, 
 // falling back to Linux memfd_create on older devices.
@@ -269,10 +270,15 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         struct v4l2_queryctrl qc;
         memset(&qc, 0, sizeof(qc));
         
-        uint32_t ctrls[5];
+        uint32_t ctrls[16];
         int num_ctrls = 0;
         
-        // Expose Camera Class heading first (v4l2-ctl groups them by this)
+        // User Controls (0x0098xxxx) - must remain sorted in ascending numerical order
+        ctrls[num_ctrls++] = 0x00980001;
+        ctrls[num_ctrls++] = V4L2_CID_HFLIP;  // 0x00980914
+        ctrls[num_ctrls++] = V4L2_CID_VFLIP;  // 0x00980915
+        ctrls[num_ctrls++] = V4L2_CID_ROTATE; // 0x00980922
+        // Camera Controls (0x009axxxx)
         ctrls[num_ctrls++] = 0x009a0001; 
 
         if (g_has_exposure) {
@@ -287,7 +293,6 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         uint32_t target_id = 0;
         
         if (req_id & 0x80000000) { 
-            // Mask off ALL flags to correctly handle V4L2_CTRL_FLAG_NEXT_CTRL queries
             uint32_t start_id = req_id & 0x0fffffff; 
             
             for (int i = 0; i < num_ctrls; i++) {
@@ -305,32 +310,58 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
             }
         }
 
-        if (target_id == 0x009a0001) {
+        if (target_id == 0x00980001) {
             qc.id = target_id;
-            qc.type = 6; 
+            qc.type = 6;
+            strcpy((char*)qc.name, "User Controls");
+        }
+        else if (target_id == V4L2_CID_HFLIP) {
+            qc.id = target_id;
+            qc.type = 2;
+            strcpy((char*)qc.name, "Horizontal Flip");
+            qc.minimum = 0; qc.maximum = 1; qc.step = 1; qc.default_value = g_sensor_hflip;
+            qc.flags = 0x0004;
+        }
+        else if (target_id == V4L2_CID_VFLIP) {
+            qc.id = target_id;
+            qc.type = 2;
+            strcpy((char*)qc.name, "Vertical Flip");
+            qc.minimum = 0; qc.maximum = 1; qc.step = 1; qc.default_value = 0;
+            qc.flags = 0x0004;
+        }
+        else if (target_id == V4L2_CID_ROTATE) {
+            qc.id = target_id;
+            qc.type = 1;
+            strcpy((char*)qc.name, "Rotate");
+            qc.minimum = 0; qc.maximum = 270; qc.step = 90; qc.default_value = g_sensor_orientation;
+            qc.flags = 0x0004;
+        }
+        else if (target_id == 0x009a0001) {
+            qc.id = target_id;
+            qc.type = 6;
             strcpy((char*)qc.name, "Camera Controls");
         }
         else if (target_id == V4L2_CID_EXPOSURE_AUTO && g_has_exposure) {
             qc.id = target_id;
-            qc.type = 3; 
+            qc.type = 3;
             strcpy((char*)qc.name, "Exposure, Auto");
             qc.minimum = 1; qc.maximum = 3; qc.step = 1; qc.default_value = 3;
         } 
         else if (target_id == V4L2_CID_EXPOSURE_ABSOLUTE && g_has_exposure) {
             qc.id = target_id;
-            qc.type = 1; 
+            qc.type = 1;
             strcpy((char*)qc.name, "Exposure, Absolute");
             qc.minimum = 1; qc.maximum = 5000; qc.step = 1; qc.default_value = 156;
         }
         else if (target_id == V4L2_CID_FOCUS_ABSOLUTE && g_has_focus) {
             qc.id = target_id;
-            qc.type = 1; 
+            qc.type = 1;
             strcpy((char*)qc.name, "Focus, Absolute");
             qc.minimum = 0; qc.maximum = 100; qc.step = 1; qc.default_value = 0;
         }
         else if (target_id == V4L2_CID_FOCUS_AUTO && g_has_focus) {
             qc.id = target_id;
-            qc.type = 2; 
+            qc.type = 2;
             strcpy((char*)qc.name, "Focus, Auto");
             qc.minimum = 0; qc.maximum = 1; qc.step = 1; qc.default_value = 1;
         }
@@ -348,6 +379,9 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         else if (ctrl_id == V4L2_CID_FOCUS_ABSOLUTE) resp.value = g_current_focus_abs;
         else if (ctrl_id == V4L2_CID_EXPOSURE_AUTO) resp.value = g_current_exposure_auto;
         else if (ctrl_id == V4L2_CID_EXPOSURE_ABSOLUTE) resp.value = g_current_exposure_abs;
+        else if (ctrl_id == V4L2_CID_ROTATE) resp.value = g_sensor_orientation;
+        else if (ctrl_id == V4L2_CID_HFLIP) resp.value = g_sensor_hflip;
+        else if (ctrl_id == V4L2_CID_VFLIP) resp.value = g_sensor_vflip;
         else resp.id = 0; 
 
         v4l2_send_reply(socket_fd, client_fd, 0, &resp, sizeof(resp));
@@ -356,6 +390,11 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
     } else if (cmd == CMD_S_CTRL) {
         IpcControlPayload payload;
         read(socket_fd, &payload, sizeof(payload));
+
+        if (payload.id == V4L2_CID_ROTATE || payload.id == V4L2_CID_HFLIP || payload.id == V4L2_CID_VFLIP) {
+            v4l2_send_reply(socket_fd, client_fd, -EROFS, NULL, 0);
+            return 0;
+        }
         
         if (payload.id == V4L2_CID_FOCUS_AUTO) g_current_focus_auto = payload.value;
         else if (payload.id == V4L2_CID_FOCUS_ABSOLUTE) g_current_focus_abs = payload.value;
@@ -367,8 +406,8 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
         int32_t ack = 0;
         v4l2_send_reply(socket_fd, client_fd, 0, &ack, sizeof(ack));
-        
-        return 4; 
+
+        return 4;
 
     } else if (cmd == CMD_G_PARM || cmd == CMD_S_PARM) {
         IpcV4l2StreamParm req;

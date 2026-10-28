@@ -31,6 +31,10 @@ int g_has_exposure = 0;
 long g_min_exposure = 0;
 long g_max_exposure = 0;
 
+int g_sensor_orientation = 0;
+int g_sensor_hflip = 0;
+int g_sensor_vflip = 0;
+
 int g_current_focus_auto = 1;
 int g_current_focus_abs = 0;
 int g_current_exposure_auto = 3;
@@ -89,13 +93,17 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
     (*env)->ReleaseIntArrayElements(env, formats, body, JNI_ABORT);
 }
 
-JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetCameraCaps(JNIEnv *env, jobject thiz, jboolean has_focus, jfloat min_focus, jboolean has_exp, jlong min_exp, jlong max_exp) {
+JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetCameraCaps(JNIEnv *env, jobject thiz, jboolean has_focus, jfloat min_focus, jboolean has_exp, jlong min_exp, jlong max_exp, jint orientation, jint hflip) {
     g_has_focus = has_focus;
     g_min_focus_dist = min_focus;
     g_has_exposure = has_exp;
     g_min_exposure = min_exp;
     g_max_exposure = max_exp;
-    LOGI("Hardware Caps Cached -> Focus: %d (Max: %f), Exposure: %d", g_has_focus, g_min_focus_dist, g_has_exposure);
+    g_sensor_orientation = orientation;
+    g_sensor_hflip = hflip;
+    g_sensor_vflip = 0;
+    LOGI("Hardware Caps Cached -> Focus: %d (Max: %f), Exposure: %d, Orientation: %d, HFlip: %d", 
+         g_has_focus, g_min_focus_dist, g_has_exposure, g_sensor_orientation, g_sensor_hflip);
 }
 
 JNIEXPORT jboolean JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeConnect(JNIEnv *env, jobject thiz, jint uds_fd) {

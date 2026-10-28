@@ -15,18 +15,18 @@ public class NativeBridge {
     public native void nativeSetFormats(int[] formats);
     public native boolean nativeConnect(int udsFd);
     public native void nativeStartLoop(int socketFd);
-    
+
     public native Surface nativeCreateImageReader(int width, int height, int format, int maxImages);
     public native void nativeDestroyImageReader();
 
     private CameraEngine cameraEngine;
-    
+
     public void setCameraEngine(CameraEngine engine) {
         this.cameraEngine = engine;
     }
 
-    public native void nativeSetCameraCaps(boolean hasFocus, float minFocus, boolean hasExposure, long minExposure, long maxExposure);
-    
+    public native void nativeSetCameraCaps(boolean hasFocus, float minFocus, boolean hasExposure, long minExposure, long maxExposure, int orientation, int hflip);
+
     public void onSetControl(int controlId, int value) {
         if (cameraEngine != null) {
             cameraEngine.applyControl(controlId, value);

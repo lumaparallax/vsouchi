@@ -89,8 +89,12 @@ public class CameraHardwareManager {
                     boolean hasExposure = (expRange != null);
                     long minExp = hasExposure ? expRange.getLower() : 0;
                     long maxExp = hasExposure ? expRange.getUpper() : 0;
-                    
-                    bridge.nativeSetCameraCaps(hasFocus, focusMaxVal, hasExposure, minExp, maxExp);
+
+                    Integer sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
+                    int orientation = (sensorOrientation != null) ? sensorOrientation : 0;
+                    int hflip = (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) ? 1 : 0;
+
+                    bridge.nativeSetCameraCaps(hasFocus, focusMaxVal, hasExposure, minExp, maxExp, orientation, hflip);
                     Logger.i(TAG, "Hardware Caps pushed to C-Bridge on boot.");
                 }
             }

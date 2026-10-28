@@ -366,7 +366,11 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         errno = EINVAL; 
         return -1;
     }
-    
+
+    if (req_clean == (uint32_t)VIDIOC_LOG_STATUS) {
+        return 0;
+    }
+
     errno = ENOTTY; 
     return -1;
 }

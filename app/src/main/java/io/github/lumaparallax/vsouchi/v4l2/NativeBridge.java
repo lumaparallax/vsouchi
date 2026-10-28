@@ -10,7 +10,7 @@ import android.view.Surface;
 public class NativeBridge {
     static { System.loadLibrary("vsouchi_bridge"); }
 
-    public native void nativeSetDeviceInfo(String deviceName);
+    public native void nativeSetDeviceInfo(String deviceName, String cameraId);
     public native void nativeSetResolutions(int[] formats, int[] widths, int[] heights, int[] fps);
     public native void nativeSetFormats(int[] formats);
     public native boolean nativeConnect(int udsFd);

@@ -23,6 +23,25 @@ public class CameraHardwareManager {
         this.bridge = bridge;
     }
 
+    private String resolveCameraRole(CameraCharacteristics chars, Integer facing) {
+        if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
+            return "Front Selfie";
+        }
+        if (facing != null && facing == CameraCharacteristics.LENS_FACING_EXTERNAL) {
+            return "External";
+        }
+
+        float[] focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+        android.util.SizeF sensorSize = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+
+        if (focalLengths != null && focalLengths.length > 0 && sensorSize != null && sensorSize.getWidth() > 0) {
+            double hFov = 2.0 * Math.toDegrees(Math.atan(sensorSize.getWidth() / (2.0 * focalLengths[0])));
+            if (hFov >= 85.0) return "Rear Ultra-Wide";
+            if (hFov <= 45.0) return "Rear Telephoto";
+        }
+        return "Rear Main";
+    }
+
     public void probeAndPushCapabilities() {
         try {
             CameraManager manager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -30,15 +49,29 @@ public class CameraHardwareManager {
             CameraCharacteristics chars = manager.getCameraCharacteristics(cameraId);
 
             Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
-            String lensStr = "Camera";
-            if (facing != null) {
-                if (facing == CameraCharacteristics.LENS_FACING_BACK) lensStr = "Back Camera";
-                else if (facing == CameraCharacteristics.LENS_FACING_FRONT) lensStr = "Front Camera";
-                else if (facing == CameraCharacteristics.LENS_FACING_EXTERNAL) lensStr = "External Camera";
+            String role = resolveCameraRole(chars, facing);
+
+            int megapixels = 0;
+            Size pixelArray = chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE);
+            if (pixelArray != null) {
+                megapixels = (int) Math.round((pixelArray.getWidth() * (double) pixelArray.getHeight()) / 1_000_000.0);
             }
-            
-            String deviceName = Build.MANUFACTURER + " " + Build.MODEL + " " + lensStr;
-            bridge.nativeSetDeviceInfo(deviceName);
+
+            String rawMfr = Build.MANUFACTURER;
+            String brand = rawMfr.substring(0, 1).toUpperCase() + rawMfr.substring(1);
+
+            String deviceName;
+            if (megapixels > 0) {
+                deviceName = brand + " " + role + " (" + megapixels + "MP)";
+            } else {
+                deviceName = brand + " " + role;
+            }
+
+            if (deviceName.length() > 31) {
+                deviceName = deviceName.substring(0, 31);
+            }
+
+            bridge.nativeSetDeviceInfo(deviceName, cameraId);
 
             StreamConfigurationMap map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
 

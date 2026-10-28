@@ -14,6 +14,7 @@
 
 #define VSOUCHI_IPC_MAGIC    0x76654476 // "vDev"
 #define VSOUCHI_PROTOCOL_VER 1
+#define VSOUCHI_DRIVER_VERSION (((0) << 16) + ((1) << 8) + (0)) // v0.1.0
 #define CMD_GET_CAPS   0x10
 #define CMD_ENUM_FMT   0x11
 #define CMD_G_FMT      0x12
@@ -51,6 +52,7 @@ typedef struct {
     char bus_info[32];
     uint32_t version;
     uint32_t capabilities;
+    uint32_t device_caps;
 } IpcV4l2Caps;
 
 typedef struct {

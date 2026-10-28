@@ -24,6 +24,7 @@
 static int g_socket_fd = -1;
 static char g_device_name[32] = "vSouchi Virtual Camera";
 static uint32_t g_kernel_version = 0;
+char g_bus_info[32] = "platform:vsouchi-cam0";
 
 int g_has_focus = 0;
 float g_min_focus_dist = 0.0f;
@@ -64,11 +65,14 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     return JNI_VERSION_1_6;
 }
 
-JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetDeviceInfo(JNIEnv *env, jobject thiz, jstring deviceName) {
+JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetDeviceInfo(JNIEnv *env, jobject thiz, jstring deviceName, jstring cameraId) {
     const char *nativeString = (*env)->GetStringUTFChars(env, deviceName, 0);
     snprintf(g_device_name, sizeof(g_device_name), "%s", nativeString);
     (*env)->ReleaseStringUTFChars(env, deviceName, nativeString);
-    g_kernel_version = get_real_kernel_version();
+
+    const char *cidStr = (*env)->GetStringUTFChars(env, cameraId, 0);
+    snprintf(g_bus_info, sizeof(g_bus_info), "platform:vsouchi-cam%s", cidStr);
+    (*env)->ReleaseStringUTFChars(env, cameraId, cidStr);
 }
 
 JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetResolutions(JNIEnv *env, jobject thiz, jintArray formats, jintArray widths, jintArray heights, jintArray fps) {

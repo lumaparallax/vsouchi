@@ -25,6 +25,7 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 // Externs mapped from jni.c
+extern char g_bus_info[32];
 extern int g_has_focus, g_has_exposure;
 extern float g_min_focus_dist;
 extern long g_min_exposure, g_max_exposure;
@@ -62,11 +63,16 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
     if (cmd == CMD_GET_CAPS) {
         IpcV4l2Caps caps;
         memset(&caps, 0, sizeof(IpcV4l2Caps));
-        snprintf(caps.driver, sizeof(caps.driver), "android-v4l2");
+        snprintf(caps.driver, sizeof(caps.driver), "vsouchi");
         snprintf(caps.card, sizeof(caps.card), "%s", device_name);
-        snprintf(caps.bus_info, sizeof(caps.bus_info), "platform:android");
-        caps.version = kernel_version;
-        caps.capabilities = 0x04000001; 
+        snprintf(caps.bus_info, sizeof(caps.bus_info), "%s", g_bus_info);
+        caps.version = VSOUCHI_DRIVER_VERSION;
+
+        // V4L2_CAP_VIDEO_CAPTURE (0x01) | V4L2_CAP_EXT_PIX_FORMAT (0x00200000) | V4L2_CAP_STREAMING (0x04000000)
+        uint32_t dev_caps = 0x04200001;
+        caps.device_caps = dev_caps;
+        // V4L2_CAP_DEVICE_CAPS (0x80000000)
+        caps.capabilities = dev_caps | 0x80000000;
         
         v4l2_send_reply(socket_fd, client_fd, 0, &caps, sizeof(IpcV4l2Caps));
         return 0;

@@ -32,11 +32,12 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
 
         struct v4l2_capability *cap = (struct v4l2_capability *)arg;
         memset(cap, 0, sizeof(*cap));
-        strncpy((char *)cap->driver, ipc_caps.driver, sizeof(cap->driver));
-        strncpy((char *)cap->card, ipc_caps.card, sizeof(cap->card));
-        strncpy((char *)cap->bus_info, ipc_caps.bus_info, sizeof(cap->bus_info));
+        strncpy((char *)cap->driver, ipc_caps.driver, sizeof(cap->driver) - 1);
+        strncpy((char *)cap->card, ipc_caps.card, sizeof(cap->card) - 1);
+        strncpy((char *)cap->bus_info, ipc_caps.bus_info, sizeof(cap->bus_info) - 1);
         cap->version = ipc_caps.version;
         cap->capabilities = ipc_caps.capabilities;
+        cap->device_caps = ipc_caps.device_caps;
         return 0; 
     }
 
@@ -63,8 +64,12 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
 
     if (req_clean == (uint32_t)VIDIOC_CROPCAP) {
         struct v4l2_cropcap *crop = (struct v4l2_cropcap *)arg;
+        if (crop->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+            errno = EINVAL;
+            return -1;
+        }
         IpcV4l2CropCap ipc_req = { .type = crop->type };
-        
+
         if (shim_ipc_transaction(CMD_CROPCAP, &ipc_req, sizeof(IpcV4l2CropCap), &ipc_req, sizeof(IpcV4l2CropCap)) != 0) return -1;
         
         crop->bounds.left = ipc_req.bounds_left;
@@ -82,6 +87,11 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
 
     if (req_clean == (uint32_t)VIDIOC_G_PARM || req_clean == (uint32_t)VIDIOC_S_PARM) {
         struct v4l2_streamparm *parm = (struct v4l2_streamparm *)arg;
+        if (parm->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+            errno = EINVAL;
+            return -1;
+        }
+
         uint32_t cmd = (req_clean == (uint32_t)VIDIOC_G_PARM) ? CMD_G_PARM : CMD_S_PARM;
         
         IpcV4l2StreamParm ipc_req;

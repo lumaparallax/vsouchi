@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #define VSOUCHI_IPC_MAGIC    0x76654476 // "vDev"
 #define VSOUCHI_PROTOCOL_VER 1
@@ -135,8 +136,7 @@ typedef struct {
 } IpcV4l2Buffer;
 
 static inline const char* vsouchi_get_vdev_path(void) {
-    static char path[512] = {0};
-    if (path[0] != '\0') return path;
+    static _Thread_local char path[512];
 
     const char* env = getenv("VDEV_PATH");
     if (env && env[0] != '\0') {
@@ -145,8 +145,16 @@ static inline const char* vsouchi_get_vdev_path(void) {
     }
 
     const char* tmp = getenv("TMPDIR");
-    snprintf(path, sizeof(path), "%s/vdev", (tmp && tmp[0] != '\0') ? tmp : "/tmp");
-    return path;
-}
+    if (tmp && tmp[0] != '\0') {
+        snprintf(path, sizeof(path), "%s/vdev", tmp);
+        return path;
+    }
 
+    const char* prefix = getenv("PREFIX");
+    if (prefix && prefix[0] != '\0') {
+        snprintf(path, sizeof(path), "%s/tmp/vdev", prefix);
+        return path;
+    }
+    return "/tmp/vdev";
+}
 #endif // VSOUCHI_IPC_H

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <poll.h>
 #include <sys/mman.h>
 #include <linux/memfd.h>
 #include <sys/eventfd.h>
@@ -163,13 +164,19 @@ static void v4l2_negotiate_format(uint32_t req_w, uint32_t req_h, uint32_t req_f
 }
 
 int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const char* device_name, uint32_t kernel_version) {
+
     if (cmd == CMD_GET_CAPS) {
         IpcV4l2Caps caps;
         memset(&caps, 0, sizeof(IpcV4l2Caps));
         snprintf(caps.driver, sizeof(caps.driver), "vsouchi");
         snprintf(caps.card, sizeof(caps.card), "%s", device_name);
         snprintf(caps.bus_info, sizeof(caps.bus_info), "%s", g_bus_info);
-        caps.version = VSOUCHI_DRIVER_VERSION;
+
+        if ((kernel_version >> 16) >= 3) {
+            caps.version = kernel_version;
+        } else {
+            caps.version = (((5) << 16) + ((10) << 8) + (0));
+        }
 
         // V4L2_CAP_VIDEO_CAPTURE (0x01) | V4L2_CAP_EXT_PIX_FORMAT (0x00200000) | V4L2_CAP_STREAMING (0x04000000)
         uint32_t dev_caps = 0x04200001;
@@ -316,33 +323,38 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
     } else if (cmd == CMD_QUERYCTRL) {
         uint32_t req_id;
         if (read_exact(socket_fd, &req_id, sizeof(uint32_t)) != 0) return -1;
-        
+
         struct v4l2_queryctrl qc;
         memset(&qc, 0, sizeof(qc));
-        
+
         uint32_t ctrls[16];
         int num_ctrls = 0;
         
-        // User Controls (0x0098xxxx) - must remain sorted in ascending numerical order
-        ctrls[num_ctrls++] = 0x00980001; // V4L2_CTRL_CLASS_USER
-        ctrls[num_ctrls++] = V4L2_CID_HFLIP;  // 0x00980914
-        ctrls[num_ctrls++] = V4L2_CID_VFLIP;  // 0x00980915
-        ctrls[num_ctrls++] = V4L2_CID_ROTATE; // 0x00980922
-        // Camera Controls (0x009axxxx)
-        ctrls[num_ctrls++] = 0x009a0001; // V4L2_CTRL_CLASS_CAMERA
+        ctrls[num_ctrls++] = 0x00980001; // V4L2_CID_USER_CLASS
+        ctrls[num_ctrls++] = V4L2_CID_HFLIP;  
+        ctrls[num_ctrls++] = V4L2_CID_VFLIP;  
+        ctrls[num_ctrls++] = V4L2_CID_ROTATE; 
+        ctrls[num_ctrls++] = 0x009a0001; // V4L2_CID_CAMERA_CLASS
 
         if (g_has_exposure) {
-            ctrls[num_ctrls++] = V4L2_CID_EXPOSURE_AUTO;     // 0x009a0901
-            ctrls[num_ctrls++] = V4L2_CID_EXPOSURE_ABSOLUTE; // 0x009a0902
+            ctrls[num_ctrls++] = V4L2_CID_EXPOSURE_AUTO;     
+            ctrls[num_ctrls++] = V4L2_CID_EXPOSURE_ABSOLUTE; 
         }
         if (g_has_focus) {
-            ctrls[num_ctrls++] = V4L2_CID_FOCUS_ABSOLUTE;    // 0x009a090a
-            ctrls[num_ctrls++] = V4L2_CID_FOCUS_AUTO;        // 0x009a090c
+            ctrls[num_ctrls++] = V4L2_CID_FOCUS_ABSOLUTE;    
+            ctrls[num_ctrls++] = V4L2_CID_FOCUS_AUTO;        
         }
 
         uint32_t target_id = 0;
-        
-        if (req_id & 0x80000000) { 
+
+        // Fail only if compound controls are requested ALONE without NEXT_CTRL
+        if ((req_id & 0x40000000 /* NEXT_COMPOUND */) && !(req_id & 0x80000000 /* NEXT_CTRL */)) {
+            v4l2_send_error(socket_fd, client_fd, EINVAL);
+            return 0;
+        }
+
+        // Standard next control enumeration
+        if (req_id & 0x80000000 /* NEXT_CTRL */) {
             uint32_t start_id = req_id & 0x0fffffff; 
             for (int i = 0; i < num_ctrls; i++) {
                 if (ctrls[i] > start_id) {
@@ -351,6 +363,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
                 }
             }
         } else {
+            // Direct control query by exact ID
             for (int i = 0; i < num_ctrls; i++) {
                 if (ctrls[i] == req_id) {
                     target_id = ctrls[i];
@@ -359,63 +372,70 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
             }
         }
 
+        if (target_id == 0) {
+            v4l2_send_error(socket_fd, client_fd, EINVAL);
+            return 0;
+        }
+
         if (target_id == 0x00980001) {
             qc.id = target_id;
-            qc.type = 6;
+            qc.type = 6; // V4L2_CTRL_TYPE_CTRL_CLASS
             strcpy((char*)qc.name, "User Controls");
+            qc.flags = 0x0044; // V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_WRITE_ONLY per checkQCtrl
         }
         else if (target_id == V4L2_CID_HFLIP) {
             qc.id = target_id;
-            qc.type = 2;
+            qc.type = 2; 
             strcpy((char*)qc.name, "Horizontal Flip");
             qc.minimum = 0; qc.maximum = 1; qc.step = 1; qc.default_value = g_sensor_hflip;
             qc.flags = 0x0004;
         }
         else if (target_id == V4L2_CID_VFLIP) {
             qc.id = target_id;
-            qc.type = 2;
+            qc.type = 2; 
             strcpy((char*)qc.name, "Vertical Flip");
             qc.minimum = 0; qc.maximum = 1; qc.step = 1; qc.default_value = 0;
             qc.flags = 0x0004;
         }
         else if (target_id == V4L2_CID_ROTATE) {
             qc.id = target_id;
-            qc.type = 1;
+            qc.type = 1; 
             strcpy((char*)qc.name, "Rotate");
             qc.minimum = 0; qc.maximum = 270; qc.step = 90; qc.default_value = g_sensor_orientation;
             qc.flags = 0x0004;
         }
         else if (target_id == 0x009a0001) {
             qc.id = target_id;
-            qc.type = 6;
+            qc.type = 6; // V4L2_CTRL_TYPE_CTRL_CLASS
             strcpy((char*)qc.name, "Camera Controls");
+            qc.flags = 0x0044; // V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_WRITE_ONLY per checkQCtrl
         }
         else if (target_id == V4L2_CID_EXPOSURE_AUTO && g_has_exposure) {
             qc.id = target_id;
-            qc.type = 3;
+            qc.type = 3; // Menu
             strcpy((char*)qc.name, "Exposure, Auto");
-            qc.minimum = 1; qc.maximum = 3; qc.step = 1; qc.default_value = 3;
+            qc.minimum = 0; qc.maximum = 1; qc.step = 1; qc.default_value = 0;
         } 
         else if (target_id == V4L2_CID_EXPOSURE_ABSOLUTE && g_has_exposure) {
             qc.id = target_id;
-            qc.type = 1;
-            strcpy((char*)qc.name, "Exposure, Absolute");
+            qc.type = 1; 
+            strcpy((char*)qc.name, "Exposure (Absolute)");
             qc.minimum = 1; qc.maximum = 5000; qc.step = 1; qc.default_value = 156;
         }
         else if (target_id == V4L2_CID_FOCUS_ABSOLUTE && g_has_focus) {
             qc.id = target_id;
-            qc.type = 1;
-            strcpy((char*)qc.name, "Focus, Absolute");
+            qc.type = 1; 
+            strcpy((char*)qc.name, "Focus (Absolute)");
             qc.minimum = 0; qc.maximum = 100; qc.step = 1; qc.default_value = 0;
         }
         else if (target_id == V4L2_CID_FOCUS_AUTO && g_has_focus) {
             qc.id = target_id;
-            qc.type = 2;
-            strcpy((char*)qc.name, "Focus, Auto");
+            qc.type = 2; 
+            strcpy((char*)qc.name, "Focus, Automatic");
             qc.minimum = 0; qc.maximum = 1; qc.step = 1; qc.default_value = 1;
         }
 
-        v4l2_send_reply(socket_fd, client_fd, 0, &qc, sizeof(qc));
+        v4l2_send_reply(socket_fd, client_fd, 0, &qc, sizeof(struct v4l2_queryctrl));
         return 0;
 
     } else if (cmd == CMD_G_CTRL) {
@@ -423,15 +443,21 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         if (read_exact(socket_fd, &ctrl_id, sizeof(uint32_t)) != 0) return -1;
         
         IpcControlPayload resp = { .id = ctrl_id, .value = 0 };
-        
+        int valid = 1;
+
         if (ctrl_id == V4L2_CID_FOCUS_AUTO) resp.value = g_current_focus_auto;
         else if (ctrl_id == V4L2_CID_FOCUS_ABSOLUTE) resp.value = g_current_focus_abs;
         else if (ctrl_id == V4L2_CID_EXPOSURE_AUTO) resp.value = g_current_exposure_auto;
-        else if (ctrl_id == V4L2_CID_EXPOSURE_ABSOLUTE) resp.value = g_current_exposure_abs;
+        else if (ctrl_id == V4L2_CID_EXPOSURE_ABSOLUTE) resp.value = g_current_exposure_abs ? g_current_exposure_abs : 156;
         else if (ctrl_id == V4L2_CID_ROTATE) resp.value = g_sensor_orientation;
         else if (ctrl_id == V4L2_CID_HFLIP) resp.value = g_sensor_hflip;
         else if (ctrl_id == V4L2_CID_VFLIP) resp.value = g_sensor_vflip;
-        else resp.id = 0; 
+        else valid = 0;
+
+        if (!valid) {
+            v4l2_send_error(socket_fd, client_fd, EINVAL);
+            return 0;
+        }
 
         v4l2_send_reply(socket_fd, client_fd, 0, &resp, sizeof(resp));
         return 0;
@@ -441,14 +467,51 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         if (read_exact(socket_fd, &payload, sizeof(payload)) != 0) return -1;
 
         if (payload.id == V4L2_CID_ROTATE || payload.id == V4L2_CID_HFLIP || payload.id == V4L2_CID_VFLIP) {
-            v4l2_send_reply(socket_fd, client_fd, -EROFS, NULL, 0);
+            v4l2_send_error(socket_fd, client_fd, EACCES);
             return 0;
         }
-        
-        if (payload.id == V4L2_CID_FOCUS_AUTO) g_current_focus_auto = payload.value;
-        else if (payload.id == V4L2_CID_FOCUS_ABSOLUTE) g_current_focus_abs = payload.value;
-        else if (payload.id == V4L2_CID_EXPOSURE_AUTO) g_current_exposure_auto = payload.value;
-        else if (payload.id == V4L2_CID_EXPOSURE_ABSOLUTE) g_current_exposure_abs = payload.value;
+
+        int valid_id = 0;
+        int in_range = 0;
+
+        if (payload.id == V4L2_CID_FOCUS_AUTO) { 
+            valid_id = 1;
+            if (payload.value >= 0 && payload.value <= 1) {
+                g_current_focus_auto = payload.value; 
+                in_range = 1;
+            }
+        }
+        else if (payload.id == V4L2_CID_FOCUS_ABSOLUTE) { 
+            valid_id = 1;
+            if (payload.value >= 0 && payload.value <= 100) {
+                g_current_focus_abs = payload.value; 
+                in_range = 1;
+            }
+        }
+        else if (payload.id == V4L2_CID_EXPOSURE_AUTO) { 
+            valid_id = 1;
+            if (payload.value >= 0 && payload.value <= 1) {
+                g_current_exposure_auto = payload.value; 
+                in_range = 1;
+            }
+        }
+        else if (payload.id == V4L2_CID_EXPOSURE_ABSOLUTE) { 
+            valid_id = 1;
+            if (payload.value >= 1 && payload.value <= 5000) {
+                g_current_exposure_abs = payload.value; 
+                in_range = 1;
+            }
+        }
+
+        if (!valid_id) {
+            v4l2_send_error(socket_fd, client_fd, EINVAL);
+            return 0;
+        }
+
+        if (!in_range) {
+            v4l2_send_error(socket_fd, client_fd, ERANGE);
+            return 0;
+        }
 
         g_last_ctrl_id = payload.id;
         g_last_ctrl_val = payload.value;
@@ -485,7 +548,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         
         g_buffer_count = (req.count > MAX_BUFFERS) ? MAX_BUFFERS : req.count;
         uint32_t sz = v4l2_get_current_frame_size();
-        
+ 
         for (uint32_t i = 0; i < g_buffer_count; i++) {
             g_buffer_fds[i] = create_shared_memory("vsouchi_frame", sz);
             g_buffer_lengths[i] = sz;
@@ -495,7 +558,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         }
 
         if (g_buffer_count > 0) {
-            g_event_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK | EFD_SEMAPHORE);
+            g_event_fd = eventfd(0, EFD_CLOEXEC | EFD_SEMAPHORE);
         }
         req.count = g_buffer_count;
 
@@ -532,23 +595,40 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
     } else if (cmd == CMD_QUERYBUF) {
         IpcV4l2Buffer req;
         if (read_exact(socket_fd, &req, sizeof(IpcV4l2Buffer)) != 0) return -1;
-        if (req.index < g_buffer_count) {
-            req.length = g_buffer_lengths[req.index];
-            req.offset = req.index * 0x1000000;
-            req.flags = 0x00000001; 
-        } else {
-            req.length = 0;
+
+        if (req.type != 1 || req.memory != 1 || req.index >= g_buffer_count) {
+            v4l2_send_error(socket_fd, client_fd, EINVAL);
+            return 0;
         }
+
+        pthread_mutex_lock(&g_v4l2_mutex);
+        req.length = g_buffer_lengths[req.index];
+        req.offset = req.index * 0x1000000;
+
+        // V4L2_BUF_FLAG_MAPPED (0x01) | V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC (0x2000)
+        uint32_t flags = 0x00002001;
+        if (g_buffer_state[req.index] == 1) flags |= 0x00000002; // QUEUED
+        else if (g_buffer_state[req.index] == 2) flags |= 0x00000004; // DONE
+        req.flags = flags;
+        pthread_mutex_unlock(&g_v4l2_mutex);
+
         v4l2_send_reply(socket_fd, client_fd, 0, &req, sizeof(IpcV4l2Buffer));
         return 0;
 
     } else if (cmd == CMD_QBUF) {
         IpcV4l2Buffer buf;
         if (read_exact(socket_fd, &buf, sizeof(IpcV4l2Buffer)) != 0) return -1;
+
+        if (buf.type != 1 || buf.memory != 1 || buf.index >= g_buffer_count) {
+            v4l2_send_error(socket_fd, client_fd, EINVAL);
+            return 0;
+        }
+
         pthread_mutex_lock(&g_v4l2_mutex);
-        if (buf.index < g_buffer_count) g_buffer_state[buf.index] = 1; 
+        g_buffer_state[buf.index] = 1;
         pthread_mutex_unlock(&g_v4l2_mutex);
-        buf.flags |= 0x00000002;
+
+        buf.flags = 0x00002003; // MAPPED | QUEUED | TIMESTAMP_MONOTONIC
         v4l2_send_reply(socket_fd, client_fd, 0, &buf, sizeof(IpcV4l2Buffer));
         return 0;
 
@@ -561,17 +641,35 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
     } else if (cmd == CMD_STREAMON || cmd == CMD_STREAMOFF) {
         int type;
         if (read_exact(socket_fd, &type, sizeof(int)) != 0) return -1;
+
+        if (type != 1 /* V4L2_BUF_TYPE_VIDEO_CAPTURE */) {
+            v4l2_send_error(socket_fd, client_fd, EINVAL);
+            return 0;
+        }
+
         g_is_streaming = (cmd == CMD_STREAMON) ? 1 : 0;
-        
-        if (cmd == CMD_STREAMOFF) {
-            pthread_mutex_lock(&g_v4l2_mutex);
+
+        pthread_mutex_lock(&g_v4l2_mutex);
+        if (cmd == CMD_STREAMON) {
+            // Safely drain any leftover wake tokens without blocking if the descriptor is empty
             if (g_event_fd >= 0) {
-                uint64_t drain_val;
-                while (read(g_event_fd, &drain_val, sizeof(drain_val)) > 0) {}
+                struct pollfd pfd = { .fd = g_event_fd, .events = POLLIN };
+                while (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
+                    uint64_t drain_val;
+                    read(g_event_fd, &drain_val, sizeof(drain_val));
+                }
+            }
+        } else {
+            for (uint32_t i = 0; i < g_buffer_count; i++) {
+                g_buffer_state[i] = 0;
+            }
+            if (g_event_fd >= 0) {
+                uint64_t wake_val = 1;
+                write(g_event_fd, &wake_val, sizeof(wake_val));
             }
             pthread_cond_broadcast(&g_v4l2_cond);
-            pthread_mutex_unlock(&g_v4l2_mutex);
         }
+        pthread_mutex_unlock(&g_v4l2_mutex);
         
         char ack = 'A'; 
         v4l2_send_reply(socket_fd, client_fd, 0, &ack, 1);
@@ -588,6 +686,12 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         return 0;
 
     } else if (cmd == CMD_DISCONNECT) {
+        g_is_streaming = 0;
+        v4l2_free_buffers();
+        pthread_mutex_lock(&g_v4l2_mutex);
+        pthread_cond_broadcast(&g_v4l2_cond);
+        pthread_mutex_unlock(&g_v4l2_mutex);
+
         char ack[4] = {(char)0xDE, (char)0xAD, (char)0xBE, (char)0xEF};
         v4l2_send_reply(socket_fd, client_fd, 0, ack, 4);
         return 3;

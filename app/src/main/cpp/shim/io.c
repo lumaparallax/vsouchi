@@ -35,7 +35,8 @@ typedef unsigned long ioctl_req_t;
 #define LOGI(...) SHIM_LOGI("vSouchi:ShimIO", __VA_ARGS__)
 
 int g_vsouchi_fds[1024] = {0};
-static int g_vsouchi_fd_minor[1024] = {0};
+int g_vsouchi_fd_minor[1024] = {0};
+int g_vsouchi_fd_flags[1024] = {0};
 int g_shim_memfds[16] = {
     -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, -1
@@ -213,7 +214,7 @@ static int ensure_broker_connected_locked(const char* real_path) {
     return 0;
 }
 
-static int connect_to_broker(const char* pathname) {
+static int connect_to_broker(const char* pathname, int flags) {
     char real_path[256];
     if (!get_virtual_sock_path(pathname, real_path, sizeof(real_path))) {
         return -1;
@@ -226,13 +227,18 @@ static int connect_to_broker(const char* pathname) {
         return -1;
     }
 
-    int raw_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK | EFD_SEMAPHORE);
+    // Only set EFD_NONBLOCK if the caller explicitly requested O_NONBLOCK
+    int eflags = EFD_CLOEXEC | EFD_SEMAPHORE;
+    if (flags & O_NONBLOCK) {
+        eflags |= EFD_NONBLOCK;
+    }
+
+    int raw_fd = eventfd(0, eflags);
     if (raw_fd < 0) {
         pthread_mutex_unlock(&g_ipc_mutex);
         return -1;
     }
 
-    // F_DUPFD forces kernel to assign an FD >= 10.
     int dummy_fd = fcntl(raw_fd, F_DUPFD, 10); 
     if (real_close) real_close(raw_fd);
     else close(raw_fd);
@@ -245,6 +251,7 @@ static int connect_to_broker(const char* pathname) {
     if (dummy_fd < 1024) {
         g_vsouchi_fds[dummy_fd] = 1;
         g_vsouchi_fd_minor[dummy_fd] = parse_minor_from_path(pathname);
+        g_vsouchi_fd_flags[dummy_fd] = flags;
     }
     g_open_count++;
     
@@ -400,7 +407,7 @@ int open(const char *pathname, int flags, ...) {
         if (fd >= 0) return fd;
     }
     if (strncmp(pathname, "/dev/video", 10) == 0 || (strncmp(pathname, "video", 5) == 0 && pathname[5] >= '0' && pathname[5] <= '9')) {
-        int vfd = connect_to_broker(pathname);
+        int vfd = connect_to_broker(pathname, flags);
         if (vfd >= 0) return vfd;
     }
     return real_open ? real_open(pathname, flags, mode) : -1;
@@ -435,7 +442,7 @@ int open64(const char *pathname, int flags, ...) {
         if (fd >= 0) return fd;
     }
     if (strncmp(pathname, "/dev/video", 10) == 0 || (strncmp(pathname, "video", 5) == 0 && pathname[5] >= '0' && pathname[5] <= '9')) {
-        int vfd = connect_to_broker(pathname);
+        int vfd = connect_to_broker(pathname, flags);
         if (vfd >= 0) return vfd;
     }
     return real_open64 ? real_open64(pathname, flags, mode) : -1;
@@ -470,7 +477,7 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
         if (fd >= 0) return fd;
     }
     if (strncmp(pathname, "/dev/video", 10) == 0 || (strncmp(pathname, "video", 5) == 0 && pathname[5] >= '0' && pathname[5] <= '9')) {
-        int vfd = connect_to_broker(pathname);
+        int vfd = connect_to_broker(pathname, flags);
         if (vfd >= 0) return vfd;
     }
     return real_openat ? real_openat(dirfd, pathname, flags, mode) : -1;
@@ -505,7 +512,7 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
         if (fd >= 0) return fd;
     }
     if (strncmp(pathname, "/dev/video", 10) == 0 || (strncmp(pathname, "video", 5) == 0 && pathname[5] >= '0' && pathname[5] <= '9')) {
-        int vfd = connect_to_broker(pathname);
+        int vfd = connect_to_broker(pathname, flags);
         if (vfd >= 0) return vfd;
     }
     return real_openat64 ? real_openat64(dirfd, pathname, flags, mode) : -1;
@@ -551,14 +558,35 @@ FILE *fopen64(const char *pathname, const char *mode) {
     return real_fopen64 ? real_fopen64(pathname, mode) : NULL;
 }
 
+extern int g_buffer_owner_fd;
+
 int close(int fd) {
     init_pointers();
     int saved_errno = errno;
 
     if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
         pthread_mutex_lock(&g_ipc_mutex);
+
+        // Minor-aware teardown: if this descriptor owns streaming on its node, cleanly stop it
+        if (shim_v4l2_check_and_clear_buffer_owner(fd)) {
+            if (g_broker_fd != -1) {
+                int type = 1; // V4L2_BUF_TYPE_VIDEO_CAPTURE
+                uint32_t cmd = CMD_STREAMOFF;
+                struct iovec iov[2] = { { &cmd, sizeof(uint32_t) }, { &type, sizeof(int) } };
+                struct msghdr msg = { .msg_iov = iov, .msg_iovlen = 2 };
+                sendmsg(g_broker_fd, &msg, MSG_NOSIGNAL);
+
+                int32_t status = 0;
+                safe_read(g_broker_fd, &status, sizeof(int32_t));
+                char ack;
+                safe_read(g_broker_fd, &ack, 1);
+            }
+        }
+
+        shim_v4l2_event_cleanup(fd);
         g_vsouchi_fds[fd] = 0;
         g_vsouchi_fd_minor[fd] = 0;
+        g_vsouchi_fd_flags[fd] = 0;
         g_open_count--;
         if (g_open_count < 0) g_open_count = 0;
         
@@ -641,6 +669,7 @@ long syscall(long number, ...) {
     } 
     else if (number == SYS_openat) {
         const char *path = (const char *)a2;
+        int flags = (int)a3;
         if (is_potential_v4l2_path(path)) {
             const char* sys_char = (strncmp(path, "/sys/dev/char/81:", 17) == 0) ? path : NULL;
             if (sys_char) {
@@ -665,7 +694,7 @@ long syscall(long number, ...) {
                 if (vfd >= 0) return vfd;
             }
             if (strncmp(path, "/dev/video", 10) == 0 || (strncmp(path, "video", 5) == 0 && path[5] >= '0' && path[5] <= '9')) {
-                int vfd = connect_to_broker(path);
+                int vfd = connect_to_broker(path, flags);
                 if (vfd >= 0) return vfd;
             }
         }

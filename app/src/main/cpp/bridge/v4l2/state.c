@@ -36,13 +36,12 @@
 #define V4L2_FMT_FLAG_COMPRESSED 0x0001
 #endif
 
-// Master template ordered by desktop ecosystem preference
 static FormatMap kMasterFormats[] = {
-    { v4l2_fourcc('N', 'V', '1', '2'), "YUV 4:2:0 (NV12)",           35,  0 },
+    { v4l2_fourcc('N', 'V', '1', '2'), "Y/UV 4:2:0",                 35,  0 },
     { v4l2_fourcc('Y', 'U', 'Y', 'V'), "YUYV 4:2:2",                 35,  0 },
-    { v4l2_fourcc('N', 'V', '2', '1'), "YUV 4:2:0 (NV21)",           35,  0 },
-    { v4l2_fourcc('Y', 'U', '1', '2'), "Planar YU12 4:2:0",          35,  0 },
-    { v4l2_fourcc('Y', 'V', '1', '2'), "Planar YV12 4:2:0",          35,  0 },
+    { v4l2_fourcc('N', 'V', '2', '1'), "Y/VU 4:2:0",                 35,  0 },
+    { v4l2_fourcc('Y', 'U', '1', '2'), "Planar YUV 4:2:0",          35,  0 },
+    { v4l2_fourcc('Y', 'V', '1', '2'), "Planar YVU 4:2:0",          35,  0 },
     { V4L2_PIX_FMT_MJPEG,              "Motion-JPEG",               256,  V4L2_FMT_FLAG_COMPRESSED },
     { V4L2_PIX_FMT_SRGGB16,            "16-bit Bayer RGRG/GBGB",     32,  0 }
 };

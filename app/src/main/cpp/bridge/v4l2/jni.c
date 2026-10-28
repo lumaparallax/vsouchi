@@ -39,7 +39,7 @@ int g_sensor_vflip = 0;
 
 int g_current_focus_auto = 1;
 int g_current_focus_abs = 0;
-int g_current_exposure_auto = 3;
+int g_current_exposure_auto = 0;
 int g_current_exposure_abs = 156;
 
 int g_last_ctrl_id = 0;
@@ -127,6 +127,10 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
     method_onStreamOff = (*env)->GetMethodID(env, clazz, "onStreamOff", "()V");
     method_onDisconnect = (*env)->GetMethodID(env, clazz, "onDisconnect", "()V");
     method_onSetControl = (*env)->GetMethodID(env, clazz, "onSetControl", "(II)V");
+
+    if (g_kernel_version == 0) {
+        g_kernel_version = get_real_kernel_version();
+    }
 
     v4l2_start_worker();
 

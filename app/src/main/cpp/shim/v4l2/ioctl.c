@@ -246,6 +246,18 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
                 g_shim_memfds[i] = received_fd;
             }
         }
+
+        if (ipc_req.count > 0) {
+            char ack = 'R';
+            safe_write(g_broker_fd, &ack, 1);
+            int ev_fd = recv_single_fd(g_broker_fd);
+            if (ev_fd >= 0) {
+                dup2(ev_fd, fd);
+
+                if (real_close) real_close(ev_fd);
+                else close(ev_fd);
+            }
+        }
         pthread_mutex_unlock(&g_ipc_mutex);
         return 0;
     }
@@ -288,6 +300,9 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
             struct timeval tv;
             gettimeofday(&tv, NULL);
             buf->timestamp = tv;
+
+            uint64_t ev_drain = 0;
+            read(fd, &ev_drain, sizeof(ev_drain));
         }
         return 0;
     }

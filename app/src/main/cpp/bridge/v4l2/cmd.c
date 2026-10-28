@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <linux/memfd.h>
+#include <sys/eventfd.h>
 #include <sys/syscall.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
@@ -181,7 +182,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
     } else if (cmd == CMD_ENUM_FMT) {
         IpcV4l2FmtDesc req;
-        read(socket_fd, &req, sizeof(IpcV4l2FmtDesc));
+        if (read_exact(socket_fd, &req, sizeof(IpcV4l2FmtDesc)) != 0) return -1;
 
         if (req.index >= (uint32_t)g_supported_format_count || req.type != 1 /* V4L2_BUF_TYPE_VIDEO_CAPTURE */) {
             v4l2_send_error(socket_fd, client_fd, EINVAL);
@@ -208,7 +209,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
     } else if (cmd == CMD_TRY_FMT || cmd == CMD_S_FMT) {
         IpcV4l2Format req_fmt;
-        read(socket_fd, &req_fmt, sizeof(IpcV4l2Format));
+        if (read_exact(socket_fd, &req_fmt, sizeof(IpcV4l2Format)) != 0) return -1;
 
         uint32_t best_w, best_h, best_fmt;
         int best_android_fmt;
@@ -232,11 +233,11 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         v4l2_fill_ipc_format(&reply, best_w, best_h, best_fmt);
         v4l2_send_reply(socket_fd, client_fd, 0, &reply, sizeof(IpcV4l2Format));
         return 0;
-    
+
     } else if (cmd == CMD_ENUM_FRAMESIZES) {
         IpcV4l2FrmSizeEnum req;
-        read(socket_fd, &req, sizeof(IpcV4l2FrmSizeEnum));
-        req.type = 1; 
+        if (read_exact(socket_fd, &req, sizeof(IpcV4l2FrmSizeEnum)) != 0) return -1;
+        req.type = 1;
         
         int target_android_fmt = -1;
         for (int i = 0; i < g_supported_format_count; i++) {
@@ -272,8 +273,8 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
     } else if (cmd == CMD_ENUM_FRAMEINTERVALS) {
         IpcV4l2FrmIvalEnum req;
-        read(socket_fd, &req, sizeof(IpcV4l2FrmIvalEnum));
-        req.type = 1; 
+        if (read_exact(socket_fd, &req, sizeof(IpcV4l2FrmIvalEnum)) != 0) return -1;
+        req.type = 1;
         req.fps_numerator = 0; 
         
         int target_android_fmt = -1;
@@ -301,7 +302,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
     } else if (cmd == CMD_CROPCAP) {
         IpcV4l2CropCap crop;
-        read(socket_fd, &crop, sizeof(IpcV4l2CropCap));
+        if (read_exact(socket_fd, &crop, sizeof(IpcV4l2CropCap)) != 0) return -1;
         
         crop.bounds_left = 0; crop.bounds_top = 0;
         crop.bounds_width = g_current_width; crop.bounds_height = g_current_height;
@@ -314,7 +315,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
     } else if (cmd == CMD_QUERYCTRL) {
         uint32_t req_id;
-        read(socket_fd, &req_id, sizeof(uint32_t));
+        if (read_exact(socket_fd, &req_id, sizeof(uint32_t)) != 0) return -1;
         
         struct v4l2_queryctrl qc;
         memset(&qc, 0, sizeof(qc));
@@ -419,7 +420,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
     } else if (cmd == CMD_G_CTRL) {
         uint32_t ctrl_id;
-        read(socket_fd, &ctrl_id, sizeof(uint32_t));
+        if (read_exact(socket_fd, &ctrl_id, sizeof(uint32_t)) != 0) return -1;
         
         IpcControlPayload resp = { .id = ctrl_id, .value = 0 };
         
@@ -437,7 +438,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
     } else if (cmd == CMD_S_CTRL) {
         IpcControlPayload payload;
-        read(socket_fd, &payload, sizeof(payload));
+        if (read_exact(socket_fd, &payload, sizeof(payload)) != 0) return -1;
 
         if (payload.id == V4L2_CID_ROTATE || payload.id == V4L2_CID_HFLIP || payload.id == V4L2_CID_VFLIP) {
             v4l2_send_reply(socket_fd, client_fd, -EROFS, NULL, 0);
@@ -458,7 +459,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
     } else if (cmd == CMD_G_PARM || cmd == CMD_S_PARM) {
         IpcV4l2StreamParm req;
-        read(socket_fd, &req, sizeof(IpcV4l2StreamParm));
+        if (read_exact(socket_fd, &req, sizeof(IpcV4l2StreamParm)) != 0) return -1;
         
         if (cmd == CMD_S_PARM && req.fps_denominator > 0) {
             uint32_t requested_fps = req.fps_denominator;
@@ -479,7 +480,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
     } else if (cmd == CMD_REQBUFS) {
         IpcV4l2ReqBufs req;
-        read(socket_fd, &req, sizeof(IpcV4l2ReqBufs));
+        if (read_exact(socket_fd, &req, sizeof(IpcV4l2ReqBufs)) != 0) return -1;
         v4l2_free_buffers();
         
         g_buffer_count = (req.count > MAX_BUFFERS) ? MAX_BUFFERS : req.count;
@@ -492,7 +493,20 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
             g_buffer_ptrs[i] = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, g_buffer_fds[i], 0);
             g_buffer_state[i] = 0;
         }
+
+        if (g_buffer_count > 0) {
+            g_event_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK | EFD_SEMAPHORE);
+        }
         req.count = g_buffer_count;
+
+        int total_fds = g_buffer_count + (g_event_fd >= 0 ? 1 : 0);
+        int send_fds[MAX_BUFFERS + 1];
+        for (uint32_t i = 0; i < g_buffer_count; i++) {
+            send_fds[i] = g_buffer_fds[i];
+        }
+        if (g_event_fd >= 0) {
+            send_fds[g_buffer_count] = g_event_fd;
+        }
         
         // Atomic FD send via SCM_RIGHTS over the control message header
         IpcInboundHeader hdr = { .client_fd = client_fd, .payload_size = sizeof(IpcV4l2ReqBufs), .ipc_status = 0 };
@@ -503,21 +517,21 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         };
         msg.msg_iov = iov; msg.msg_iovlen = 2;
         
-        char cmsg_buf[CMSG_SPACE(MAX_BUFFERS * sizeof(int))] = {0};
+        char cmsg_buf[CMSG_SPACE((MAX_BUFFERS + 1) * sizeof(int))] = {0};
         msg.msg_control = cmsg_buf; 
-        msg.msg_controllen = CMSG_SPACE(g_buffer_count * sizeof(int));
+        msg.msg_controllen = CMSG_SPACE(total_fds * sizeof(int));
         
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
         cmsg->cmsg_level = SOL_SOCKET; cmsg->cmsg_type = SCM_RIGHTS;
-        cmsg->cmsg_len = CMSG_LEN(g_buffer_count * sizeof(int));
-        memcpy(CMSG_DATA(cmsg), g_buffer_fds, g_buffer_count * sizeof(int));
+        cmsg->cmsg_len = CMSG_LEN(total_fds * sizeof(int));
+        memcpy(CMSG_DATA(cmsg), send_fds, total_fds * sizeof(int));
         
         sendmsg(socket_fd, &msg, 0);
         return 0;
 
     } else if (cmd == CMD_QUERYBUF) {
         IpcV4l2Buffer req;
-        read(socket_fd, &req, sizeof(IpcV4l2Buffer));
+        if (read_exact(socket_fd, &req, sizeof(IpcV4l2Buffer)) != 0) return -1;
         if (req.index < g_buffer_count) {
             req.length = g_buffer_lengths[req.index];
             req.offset = req.index * 0x1000000;
@@ -530,7 +544,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
     } else if (cmd == CMD_QBUF) {
         IpcV4l2Buffer buf;
-        read(socket_fd, &buf, sizeof(IpcV4l2Buffer));
+        if (read_exact(socket_fd, &buf, sizeof(IpcV4l2Buffer)) != 0) return -1;
         pthread_mutex_lock(&g_v4l2_mutex);
         if (buf.index < g_buffer_count) g_buffer_state[buf.index] = 1; 
         pthread_mutex_unlock(&g_v4l2_mutex);
@@ -540,24 +554,28 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
     } else if (cmd == CMD_DQBUF) {
         IpcV4l2Buffer buf;
-        read(socket_fd, &buf, sizeof(IpcV4l2Buffer));
+        if (read_exact(socket_fd, &buf, sizeof(IpcV4l2Buffer)) != 0) return -1;
         v4l2_queue_dqbuf_request(socket_fd, client_fd, &buf);
         return 0; 
 
     } else if (cmd == CMD_STREAMON || cmd == CMD_STREAMOFF) {
         int type;
-        read(socket_fd, &type, sizeof(int));
+        if (read_exact(socket_fd, &type, sizeof(int)) != 0) return -1;
         g_is_streaming = (cmd == CMD_STREAMON) ? 1 : 0;
         
         if (cmd == CMD_STREAMOFF) {
             pthread_mutex_lock(&g_v4l2_mutex);
+            if (g_event_fd >= 0) {
+                uint64_t drain_val;
+                while (read(g_event_fd, &drain_val, sizeof(drain_val)) > 0) {}
+            }
             pthread_cond_broadcast(&g_v4l2_cond);
             pthread_mutex_unlock(&g_v4l2_mutex);
         }
         
         char ack = 'A'; 
         v4l2_send_reply(socket_fd, client_fd, 0, &ack, 1);
-        return (cmd == CMD_STREAMON) ? 1 : 2; 
+        return (cmd == CMD_STREAMON) ? 1 : 2;
 
     } else if (cmd == CMD_POLL) {
         int ready = 0;

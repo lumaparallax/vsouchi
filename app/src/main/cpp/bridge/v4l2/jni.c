@@ -12,6 +12,7 @@
 #include <sys/utsname.h>
 #include <android/log.h>
 #include "vsouchi_ipc.h"
+#include "bridge/v4l2/internal.h"
 #include "bridge/v4l2/v4l2.h"
 
 #ifndef KERNEL_VERSION
@@ -131,9 +132,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
 
     while (1) {
         IpcOutboundHeader req;
-        int n = read(socket_fd, &req, sizeof(IpcOutboundHeader));
-        
-        if (n <= 0) {
+        if (read_exact(socket_fd, &req, sizeof(IpcOutboundHeader)) != 0) {
             (*env)->CallVoidMethod(env, thiz, method_onStreamOff);
             v4l2_stop_worker();
             v4l2_cleanup();
@@ -141,7 +140,13 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
         }
         
         int signal = v4l2_handle_command(socket_fd, req.client_fd, req.cmd, g_device_name, g_kernel_version);
-        
+        if (signal < 0) {
+            (*env)->CallVoidMethod(env, thiz, method_onStreamOff);
+            v4l2_stop_worker();
+            v4l2_cleanup();
+            break;
+        }
+
         if (signal == 1) { 
             (*env)->CallVoidMethod(env, thiz, method_onStreamOn, 
                                    v4l2_get_width(), v4l2_get_height(), 

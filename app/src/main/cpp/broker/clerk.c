@@ -51,13 +51,7 @@ void* clerk_thread_func(void* arg) {
         int n = read(client_fd, buf, sizeof(buf));
         
         if (n <= 0) {
-            printf("[Broker] Shim (FD %d) disconnected.\n", client_fd);
-            subsystem_handle_disconnect(client_fd);
-            
-            pthread_mutex_lock(&g_clients_mutex);
-            ctx->active = 0; close(client_fd);
-            pthread_mutex_unlock(&g_clients_mutex);
-            return NULL;
+            goto cleanup;
         }
 
         // Catch Shim's raw FD ACK 'R' to securely trigger kernel-level FD transfer
@@ -148,6 +142,17 @@ cleanup:
      // Ensure socket cleanup runs on both client EOF and bridge fatal error
     printf("[Broker] Shim (FD %d) cleaned up.\n", client_fd);
     subsystem_handle_disconnect(client_fd);
+
+    pthread_mutex_lock(&ctx->lock);
+    for (int i = ctx->fd_send_index; i < ctx->fd_count; i++) {
+        if (ctx->received_fds[i] >= 0) {
+            close(ctx->received_fds[i]);
+            ctx->received_fds[i] = -1;
+        }
+    }
+    ctx->fd_count = 0;
+    ctx->fd_send_index = 0;
+    pthread_mutex_unlock(&ctx->lock);
 
     pthread_mutex_lock(&g_clients_mutex);
     ctx->active = 0;

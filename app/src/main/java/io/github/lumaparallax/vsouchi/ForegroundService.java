@@ -63,12 +63,12 @@ public class ForegroundService extends Service {
             stopSelf();
             return;
         }
-        
+
         nativeBridge = new NativeBridge();
         cameraEngine = new CameraEngine(this, nativeBridge);
         nativeBridge.setCameraEngine(cameraEngine);
         
-        hardwareManager = new CameraHardwareManager(this, nativeBridge);
+        hardwareManager = new CameraHardwareManager(this, nativeBridge, cameraEngine);
         hardwareManager.probeAndPushCapabilities();
         
         Logger.i(TAG, "Bridge Service created.");

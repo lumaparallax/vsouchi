@@ -12,9 +12,11 @@
 #include <sys/mman.h>
 #include <linux/memfd.h>
 #include <sys/syscall.h>
+#include <sys/syscall.h>
 #include <pthread.h>
 #include <sys/uio.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <android/log.h>
 
 #include "bridge/v4l2/v4l2.h"
@@ -65,10 +67,14 @@ void* g_buffer_ptrs[MAX_BUFFERS] = {NULL};
 uint32_t g_buffer_count = 0;
 uint32_t g_buffer_bytesused[MAX_BUFFERS] = {0};
 int g_buffer_state[MAX_BUFFERS] = {0};
+int g_event_fd = -1;
 
 volatile int g_is_streaming = 0;
 pthread_mutex_t g_v4l2_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t  g_v4l2_cond  = PTHREAD_COND_INITIALIZER;
+
+static int s_next_write_idx = 0;
+static int s_next_read_idx = 0;
 
 static pthread_mutex_t g_bridge_tx_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -258,6 +264,10 @@ void v4l2_send_error(int socket_fd, uint32_t client_fd, int32_t error_code) {
 }
 
 void v4l2_free_buffers() {
+    if (g_event_fd >= 0) {
+        close(g_event_fd);
+        g_event_fd = -1;
+    }
     for (int i = 0; i < MAX_BUFFERS; i++) {
         if (g_buffer_ptrs[i] != NULL && g_buffer_ptrs[i] != MAP_FAILED) {
             munmap(g_buffer_ptrs[i], g_buffer_lengths[i]);
@@ -273,10 +283,16 @@ void v4l2_free_buffers() {
         g_buffer_state[i] = 0;
     }
     g_buffer_count = 0;
+    s_next_write_idx = 0;
+    s_next_read_idx = 0;
 }
 
 void v4l2_cleanup() {
     g_is_streaming = 0;
+    if (g_event_fd >= 0) {
+        close(g_event_fd);
+        g_event_fd = -1;
+    }
     
     pthread_mutex_lock(&g_v4l2_mutex);
     pthread_cond_broadcast(&g_v4l2_cond);
@@ -304,7 +320,12 @@ static void* persistent_dqbuf_worker(void* arg) {
         int idx = -1;
         while (g_is_streaming) {
             for (int i = 0; i < (int)g_buffer_count; i++) { 
-                if (g_buffer_state[i] == 2) { idx = i; break; } 
+                int candidate = (s_next_read_idx + i) % (int)g_buffer_count;
+                if (g_buffer_state[candidate] == 2) {
+                    idx = candidate;
+                    s_next_read_idx = (candidate + 1) % (int)g_buffer_count;
+                    break;
+                }
             }
             if (idx != -1) break;
             pthread_cond_wait(&g_v4l2_cond, &g_v4l2_mutex); 
@@ -327,6 +348,7 @@ static void* persistent_dqbuf_worker(void* arg) {
 }
 
 void v4l2_queue_dqbuf_request(int socket_fd, uint32_t client_fd, IpcV4l2Buffer* buf) {
+    int overflow = 0;
     pthread_mutex_lock(&g_dq_mutex);
     if (g_dq_count < DQ_QUEUE_SIZE) {
         g_dq_queue[g_dq_tail].socket_fd = socket_fd;
@@ -338,8 +360,13 @@ void v4l2_queue_dqbuf_request(int socket_fd, uint32_t client_fd, IpcV4l2Buffer* 
         pthread_cond_signal(&g_dq_cond); 
     } else {
         LOGE("CRITICAL: DQBUF Queue Overflow! App is requesting frames too fast.");
+        overflow = 1;
     }
     pthread_mutex_unlock(&g_dq_mutex);
+
+    if (overflow) {
+        v4l2_send_error(socket_fd, client_fd, EBUSY);
+    }
 }
 
 void v4l2_start_worker() {
@@ -383,7 +410,12 @@ uint32_t v4l2_get_buffer_size(int index) {
 int v4l2_get_queued_index() {
     pthread_mutex_lock(&g_v4l2_mutex);
     for (int i = 0; i < (int)g_buffer_count; i++) {
-        if (g_buffer_state[i] == 1) { pthread_mutex_unlock(&g_v4l2_mutex); return i; }
+        int candidate = (s_next_write_idx + i) % (int)g_buffer_count;
+        if (g_buffer_state[candidate] == 1) {
+            s_next_write_idx = (candidate + 1) % (int)g_buffer_count;
+            pthread_mutex_unlock(&g_v4l2_mutex);
+            return candidate;
+        }
     }
     pthread_mutex_unlock(&g_v4l2_mutex);
     return -1;
@@ -392,15 +424,11 @@ int v4l2_get_queued_index() {
 void v4l2_push_filled_buffer(int index) {
     pthread_mutex_lock(&g_v4l2_mutex);
     if (index >= 0 && index < (int)g_buffer_count) {
-        
-        // Zero-latency enforcement: Recycle unread frames so Android can immediately overwrite them
-        for (int i = 0; i < (int)g_buffer_count; i++) {
-            if (g_buffer_state[i] == 2) {
-                g_buffer_state[i] = 1; 
-            }
-        }
-
         g_buffer_state[index] = 2; 
+        if (g_event_fd >= 0) {
+            uint64_t val = 1;
+            write(g_event_fd, &val, sizeof(val));
+        }
         pthread_cond_signal(&g_v4l2_cond);
     }
     pthread_mutex_unlock(&g_v4l2_mutex);

@@ -75,9 +75,13 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
         uint32_t fmt = v4l2_get_current_format();
 
         int is_nv12 = (fmt == v4l2_fourcc('N', 'V', '1', '2'));
-        
-        // Zero-Padding Contiguous NV12 direct from GPU optimization
-        if (is_nv12 && uv_pixel_stride == 2 && uv_stride == width && y_stride == width && u_data == v_data - 1) {
+        int is_nv21 = (fmt == v4l2_fourcc('N', 'V', '2', '1'));
+
+        // Zero-Padding Contiguous NV12 / NV21 direct from GPU optimization
+        int direct_nv12 = (is_nv12 && uv_pixel_stride == 2 && uv_stride == width && y_stride == width && u_data == v_data - 1);
+        int direct_nv21 = (is_nv21 && uv_pixel_stride == 2 && uv_stride == width && y_stride == width && v_data == u_data - 1);
+
+        if (direct_nv12 || direct_nv21) {
             uint32_t total_sz = (width * height * 3) / 2;
             memcpy(payload, y_data, total_sz);
             v4l2_set_buffer_bytesused(index, total_sz);
@@ -113,6 +117,12 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
             } 
             else if (fmt == v4l2_fourcc('N', 'V', '1', '2')) {
                 I420ToNV12(temp_y, width, temp_u, width / 2, temp_v, width / 2,
+                           payload, target_w, payload + (target_w * target_h), target_w,
+                           target_w, target_h);
+                v4l2_set_buffer_bytesused(index, (target_w * target_h * 3) / 2);
+            }
+            else if (fmt == v4l2_fourcc('N', 'V', '2', '1')) {
+                I420ToNV21(temp_y, width, temp_u, width / 2, temp_v, width / 2,
                            payload, target_w, payload + (target_w * target_h), target_w,
                            target_w, target_h);
                 v4l2_set_buffer_bytesused(index, (target_w * target_h * 3) / 2);

@@ -23,10 +23,18 @@ public class CaptureSessionController {
 
     private int stateFocusMode = CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO;
     private float stateFocusDistance = 0.0f;
+
     private int stateAeMode = CaptureRequest.CONTROL_AE_MODE_ON;
     private long stateExposureTime = 15600000L;
+    private float maxFocusDiopters = 10.0f;
 
     private int templateType = CameraDevice.TEMPLATE_RECORD;
+
+    public void setMaxFocusDiopters(float maxDiopters) {
+        if (maxDiopters > 0.0f) {
+            this.maxFocusDiopters = maxDiopters;
+        }
+    }
 
     public void setTemplateType(int template) {
         this.templateType = template;
@@ -38,9 +46,8 @@ public class CaptureSessionController {
                 stateFocusMode = (value == 1) ? CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO : CaptureRequest.CONTROL_AF_MODE_OFF;
                 break;
             case V4L2_CID_FOCUS_ABSOLUTE:
-                // Android uses Diopters (0.0f is infinity, max is macro) instead of V4L2's 0-100 scale.
-                float maxDiopters = 10.0f; 
-                stateFocusDistance = (value / 100.0f) * maxDiopters;
+                // Map V4L2 0-100 scale against actual hardware diopters
+                stateFocusDistance = (value / 100.0f) * maxFocusDiopters;
                 break;
             case V4L2_CID_EXPOSURE_AUTO:
                 stateAeMode = (value == 1) ? CaptureRequest.CONTROL_AE_MODE_OFF : CaptureRequest.CONTROL_AE_MODE_ON;
@@ -59,7 +66,6 @@ public class CaptureSessionController {
     public void updateRepeatingRequest(CameraDevice cameraDevice, Surface activeSurface, int activeFps, CameraCaptureSession captureSession, Handler backgroundHandler) {
         try {
             CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(templateType);
-            builder.addTarget(activeSurface);
             builder.addTarget(activeSurface);
             builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(activeFps, activeFps));
 

@@ -42,6 +42,10 @@ public class CameraEngine {
         this.sessionController = new CaptureSessionController();
     }
 
+    public void setMaxFocusDiopters(float maxDiopters) {
+        sessionController.setMaxFocusDiopters(maxDiopters);
+    }
+
     @SuppressLint("MissingPermission")
     public void start(int width, int height, int fps, int format) {
         if (isStreaming && width == activeWidth && height == activeHeight && fps == activeFps && format == activeFormat) return;

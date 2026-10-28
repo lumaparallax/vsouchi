@@ -20,6 +20,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
+#include <sys/eventfd.h>
 #include <dirent.h>
 #include "shim/internal.h"
 #include "shim/log.h"
@@ -34,6 +35,7 @@ typedef unsigned long ioctl_req_t;
 #define LOGI(...) SHIM_LOGI("vSouchi:ShimIO", __VA_ARGS__)
 
 int g_vsouchi_fds[1024] = {0};
+static int g_vsouchi_fd_minor[1024] = {0};
 int g_shim_memfds[16] = {
     -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, -1
@@ -72,13 +74,14 @@ int shim_v4l2_handle_ioctl(int fd, int request, void* arg);
 void shim_clear_memfds() {
     for (int i = 0; i < 16; i++) {
         if (g_shim_memfds[i] >= 0) {
-            real_close(g_shim_memfds[i]); 
+            if (real_close) real_close(g_shim_memfds[i]);
+            else close(g_shim_memfds[i]);
             g_shim_memfds[i] = -1;
         }
     }
 }
 
-void init_pointers() {
+__attribute__((constructor)) void init_pointers(void) {
     if (real_open) return; 
     real_open = dlsym(RTLD_NEXT, "open");
     real_open64 = dlsym(RTLD_NEXT, "open64");
@@ -112,14 +115,60 @@ void *v4l2_mmap(void *addr, size_t length, int prot, int flags, int fd, int64_t 
     return mmap64(addr, length, prot, flags, fd, (off64_t)offset);
 }
 
+static inline int is_potential_v4l2_path(const char* path) {
+    if (!path) return 0;
+    if (path[0] == '/') {
+        if (path[1] == 'd' && path[2] == 'e' && path[3] == 'v' && path[4] == '/' && path[5] == 'v') {
+            return (strncmp(path, "/dev/video", 10) == 0 && path[10] >= '0' && path[10] <= '9');
+        }
+        if (path[1] == 's' && path[2] == 'y' && path[3] == 's' && path[4] == '/') {
+            return (strncmp(path, "/sys/dev/char/81:", 17) == 0 ||
+                    strncmp(path, "/sys/class/video4linux", 22) == 0);
+        }
+    } else {
+        // Relative paths (e.g. "video0" inside /dev)
+        if (strncmp(path, "video", 5) == 0 && path[5] >= '0' && path[5] <= '9') return 1;
+    }
+    return 0;
+}
+
+static int parse_minor_from_path(const char* path) {
+    if (!path) return 0;
+    const char* p = strstr(path, "video");
+    if (p) {
+        int m = atoi(p + 5);
+        return (m >= 0) ? m : 0;
+    }
+    p = strstr(path, "81:");
+    if (p) {
+        int m = atoi(p + 3);
+        return (m >= 0) ? m : 0;
+    }
+    return 0;
+}
+
 static int get_virtual_sock_path(const char* pathname, char* out_path, size_t max_len) {
-    if (!pathname || strncmp(pathname, "/dev/", 5) != 0) return 0;
-    const char* rel_node = pathname + 5;
-    if (rel_node[0] == '\0') return 0;
+    if (!pathname) return 0;
+    const char* rel_node = NULL;
+    if (strncmp(pathname, "/dev/video", 10) == 0 && pathname[10] >= '0' && pathname[10] <= '9') {
+        rel_node = pathname + 5; // "videoX"
+    } else if (strncmp(pathname, "video", 5) == 0 && pathname[5] >= '0' && pathname[5] <= '9') {
+        rel_node = pathname;
+    } else {
+        return 0;
+    }
 
     const char* base_dir = vsouchi_get_vdev_path();
     snprintf(out_path, max_len, "%s/%s", base_dir, rel_node);
     return 1;
+}
+
+static int is_virtual_node_active(const char* pathname) {
+    char sock_path[256];
+    if (!get_virtual_sock_path(pathname, sock_path, sizeof(sock_path))) return 0;
+
+    init_pointers();
+    return (real_access ? (real_access(sock_path, F_OK) == 0) : (access(sock_path, F_OK) == 0));
 }
 
 static int ensure_broker_connected_locked(const char* real_path) {
@@ -177,72 +226,62 @@ static int connect_to_broker(const char* pathname) {
         return -1;
     }
 
-    int raw_fd = real_open ? real_open("/dev/null", O_RDWR) : -1;
+    int raw_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK | EFD_SEMAPHORE);
     if (raw_fd < 0) {
         pthread_mutex_unlock(&g_ipc_mutex);
         return -1;
     }
 
-    // F_DUPFD forces the kernel to assign an FD >= 10. 
-    // Prevents target apps from accidentally closing the socket if they recycle stdin/stdout.
+    // F_DUPFD forces kernel to assign an FD >= 10.
     int dummy_fd = fcntl(raw_fd, F_DUPFD, 10); 
-    real_close(raw_fd); 
+    if (real_close) real_close(raw_fd);
+    else close(raw_fd);
 
     if (dummy_fd < 0) {
         pthread_mutex_unlock(&g_ipc_mutex);
         return -1;
     }
 
-    if (dummy_fd < 1024) g_vsouchi_fds[dummy_fd] = 1;
+    if (dummy_fd < 1024) {
+        g_vsouchi_fds[dummy_fd] = 1;
+        g_vsouchi_fd_minor[dummy_fd] = parse_minor_from_path(pathname);
+    }
     g_open_count++;
     
     pthread_mutex_unlock(&g_ipc_mutex);
     return dummy_fd;
 }
 
-static int is_virtual_node_active(const char* pathname) {
-    char sock_path[256];
-    if (!get_virtual_sock_path(pathname, sock_path, sizeof(sock_path))) return 0;
-    init_pointers();
-
-    if (real_access ? (real_access(sock_path, F_OK) != 0) : (access(sock_path, F_OK) != 0)) {
-        return 0;
-    }
-
-    pthread_mutex_lock(&g_ipc_mutex);
-    int active = (ensure_broker_connected_locked(sock_path) == 0);
-    pthread_mutex_unlock(&g_ipc_mutex);
-    return active;
-}
-
 // --- VIRTUAL STAT GENERATORS ---
-static int fill_virtual_videodev_stat(struct stat *st) {
+static int fill_virtual_videodev_stat(struct stat *st, int minor) {
     memset(st, 0, sizeof(*st));
     st->st_mode = S_IFCHR | 0666; 
-    st->st_rdev = makedev(81, 0);
+    st->st_rdev = makedev(81, minor);
     st->st_uid = getuid();
     st->st_gid = getgid();
     return 0;
 }
 
-static int fill_virtual_videodev_stat64(struct stat64 *st) {
+static int fill_virtual_videodev_stat64(struct stat64 *st, int minor) {
     memset(st, 0, sizeof(*st));
     st->st_mode = S_IFCHR | 0666; 
-    st->st_rdev = makedev(81, 0);
+    st->st_rdev = makedev(81, minor);
     st->st_uid = getuid();
     st->st_gid = getgid();
     return 0;
 }
 
 // --- HELPER: VIRTUAL SYSFS UEVENT ---
-static int provide_virtual_uevent() {
+static int provide_virtual_uevent(int minor) {
     const char* base_dir = vsouchi_get_vdev_path();
     char tmp_path[256];
-    snprintf(tmp_path, sizeof(tmp_path), "%s/.vsouchi_uevent", base_dir);
+    snprintf(tmp_path, sizeof(tmp_path), "%s/.vsouchi_uevent_%d", base_dir, minor);
 
+    init_pointers();
     int fd = real_open ? real_open(tmp_path, O_RDWR | O_CREAT | O_TRUNC, 0666) : -1;
     if (fd >= 0) {
-        const char* uevent_data = "MAJOR=81\nMINOR=0\nDEVNAME=video0\n";
+        char uevent_data[128];
+        snprintf(uevent_data, sizeof(uevent_data), "MAJOR=81\nMINOR=%d\nDEVNAME=video%d\n", minor, minor);
         write(fd, uevent_data, strlen(uevent_data));
         lseek(fd, 0, SEEK_SET);
         return fd;
@@ -255,7 +294,7 @@ static int provide_virtual_uevent() {
 // ==========================================
 DIR *opendir(const char *name) {
     init_pointers();
-    if (name && strncmp(name, "/sys/class/", 11) == 0) {
+    if (name && strncmp(name, "/sys/class/video4linux", 22) == 0) {
         const char* base_dir = vsouchi_get_vdev_path();
         char virtual_dir[256];
         snprintf(virtual_dir, sizeof(virtual_dir), "%s/sys/%s", base_dir, name + 5);
@@ -270,54 +309,61 @@ DIR *opendir(const char *name) {
 // ==========================================
 int stat(const char *pathname, struct stat *statbuf) {
     init_pointers();
-    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat(statbuf);
+    if (!is_potential_v4l2_path(pathname)) return real_stat ? real_stat(pathname, statbuf) : -1;
+    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat(statbuf, parse_minor_from_path(pathname));
     return real_stat ? real_stat(pathname, statbuf) : -1;
 }
 
 int stat64(const char *pathname, struct stat64 *statbuf) {
     init_pointers();
-    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat64(statbuf);
+    if (!is_potential_v4l2_path(pathname)) return real_stat64 ? real_stat64(pathname, statbuf) : -1;
+    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat64(statbuf, parse_minor_from_path(pathname));
     return real_stat64 ? real_stat64(pathname, statbuf) : -1;
 }
 
 int lstat(const char *pathname, struct stat *statbuf) {
     init_pointers();
-    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat(statbuf);
+    if (!is_potential_v4l2_path(pathname)) return real_lstat ? real_lstat(pathname, statbuf) : -1;
+    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat(statbuf, parse_minor_from_path(pathname));
     return real_lstat ? real_lstat(pathname, statbuf) : -1;
 }
 
 int lstat64(const char *pathname, struct stat64 *statbuf) {
     init_pointers();
-    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat64(statbuf);
+    if (!is_potential_v4l2_path(pathname)) return real_lstat64 ? real_lstat64(pathname, statbuf) : -1;
+    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat64(statbuf, parse_minor_from_path(pathname));
     return real_lstat64 ? real_lstat64(pathname, statbuf) : -1;
 }
 
 int fstat(int fd, struct stat *statbuf) {
     init_pointers();
-    if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) return fill_virtual_videodev_stat(statbuf);
+    if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) return fill_virtual_videodev_stat(statbuf, g_vsouchi_fd_minor[fd]);
     return real_fstat ? real_fstat(fd, statbuf) : -1;
 }
 
 int fstat64(int fd, struct stat64 *statbuf) {
     init_pointers();
-    if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) return fill_virtual_videodev_stat64(statbuf);
+    if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) return fill_virtual_videodev_stat64(statbuf, g_vsouchi_fd_minor[fd]);
     return real_fstat64 ? real_fstat64(fd, statbuf) : -1;
 }
 
 int fstatat(int dirfd, const char *pathname, struct stat *statbuf, int flags) {
     init_pointers();
-    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat(statbuf);
+    if (!is_potential_v4l2_path(pathname)) return real_fstatat ? real_fstatat(dirfd, pathname, statbuf, flags) : -1;
+    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat(statbuf, parse_minor_from_path(pathname));
     return real_fstatat ? real_fstatat(dirfd, pathname, statbuf, flags) : -1;
 }
 
 int fstatat64(int dirfd, const char *pathname, struct stat64 *statbuf, int flags) {
     init_pointers();
-    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat64(statbuf);
+    if (!is_potential_v4l2_path(pathname)) return real_fstatat64 ? real_fstatat64(dirfd, pathname, statbuf, flags) : -1;
+    if (is_virtual_node_active(pathname)) return fill_virtual_videodev_stat64(statbuf, parse_minor_from_path(pathname));
     return real_fstatat64 ? real_fstatat64(dirfd, pathname, statbuf, flags) : -1;
 }
 
 int access(const char *pathname, int mode) {
     init_pointers();
+    if (!is_potential_v4l2_path(pathname)) return real_access ? real_access(pathname, mode) : -1;
     if (is_virtual_node_active(pathname)) return 0;
     return real_access ? real_access(pathname, mode) : -1;
 }
@@ -329,13 +375,16 @@ int open(const char *pathname, int flags, ...) {
     init_pointers();
     mode_t mode = 0;
     if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); }
+    if (!is_potential_v4l2_path(pathname)) return real_open ? real_open(pathname, flags, mode) : -1;
     
-    if (pathname && strstr(pathname, "/sys/dev/char/81:0")) {
+    const char* sys_char = (strncmp(pathname, "/sys/dev/char/81:", 17) == 0) ? pathname : NULL;
+    if (sys_char) {
+        int minor = atoi(sys_char + 17);
         const char* base_dir = vsouchi_get_vdev_path();
         char vpath[256];
-        snprintf(vpath, sizeof(vpath), "%s/video0", base_dir);
+        snprintf(vpath, sizeof(vpath), "%s/video%d", base_dir, minor);
         if (real_access ? (real_access(vpath, F_OK) == 0) : (access(vpath, F_OK) == 0)) {
-            if (strstr(pathname, "uevent")) return provide_virtual_uevent();
+            if (strstr(pathname, "uevent")) return provide_virtual_uevent(minor);
             if (strstr(pathname, "device")) {
                 char virtual_dir[256];
                 snprintf(virtual_dir, sizeof(virtual_dir), "%s/sys/class/video4linux", base_dir);
@@ -343,14 +392,14 @@ int open(const char *pathname, int flags, ...) {
             }
         }
     }
-    if (pathname && strncmp(pathname, "/sys/class/", 11) == 0) {
+    if (strncmp(pathname, "/sys/class/video4linux", 22) == 0) {
         const char* base_dir = vsouchi_get_vdev_path();
         char virtual_dir[256];
         snprintf(virtual_dir, sizeof(virtual_dir), "%s/sys/%s", base_dir, pathname + 5);
         int fd = real_open ? real_open(virtual_dir, flags, mode) : -1;
         if (fd >= 0) return fd;
     }
-    if (pathname && strncmp(pathname, "/dev/", 5) == 0) {
+    if (strncmp(pathname, "/dev/video", 10) == 0 || (strncmp(pathname, "video", 5) == 0 && pathname[5] >= '0' && pathname[5] <= '9')) {
         int vfd = connect_to_broker(pathname);
         if (vfd >= 0) return vfd;
     }
@@ -361,13 +410,16 @@ int open64(const char *pathname, int flags, ...) {
     init_pointers();
     mode_t mode = 0;
     if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); }
-    
-    if (pathname && strstr(pathname, "/sys/dev/char/81:0")) {
+    if (!is_potential_v4l2_path(pathname)) return real_open64 ? real_open64(pathname, flags, mode) : -1;
+
+    const char* sys_char = (strncmp(pathname, "/sys/dev/char/81:", 17) == 0) ? pathname : NULL;
+    if (sys_char) {
+        int minor = atoi(sys_char + 17);
         const char* base_dir = vsouchi_get_vdev_path();
         char vpath[256];
-        snprintf(vpath, sizeof(vpath), "%s/video0", base_dir);
+        snprintf(vpath, sizeof(vpath), "%s/video%d", base_dir, minor);
         if (real_access ? (real_access(vpath, F_OK) == 0) : (access(vpath, F_OK) == 0)) {
-            if (strstr(pathname, "uevent")) return provide_virtual_uevent();
+            if (strstr(pathname, "uevent")) return provide_virtual_uevent(minor);
             if (strstr(pathname, "device")) {
                 char virtual_dir[256];
                 snprintf(virtual_dir, sizeof(virtual_dir), "%s/sys/class/video4linux", base_dir);
@@ -375,14 +427,14 @@ int open64(const char *pathname, int flags, ...) {
             }
         }
     }
-    if (pathname && strncmp(pathname, "/sys/class/", 11) == 0) {
+    if (strncmp(pathname, "/sys/class/video4linux", 22) == 0) {
         const char* base_dir = vsouchi_get_vdev_path();
         char virtual_dir[256];
         snprintf(virtual_dir, sizeof(virtual_dir), "%s/sys/%s", base_dir, pathname + 5);
         int fd = real_open64 ? real_open64(virtual_dir, flags, mode) : -1;
         if (fd >= 0) return fd;
     }
-    if (pathname && strncmp(pathname, "/dev/", 5) == 0) {
+    if (strncmp(pathname, "/dev/video", 10) == 0 || (strncmp(pathname, "video", 5) == 0 && pathname[5] >= '0' && pathname[5] <= '9')) {
         int vfd = connect_to_broker(pathname);
         if (vfd >= 0) return vfd;
     }
@@ -393,13 +445,16 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
     init_pointers();
     mode_t mode = 0;
     if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); }
-    
-    if (pathname && strstr(pathname, "/sys/dev/char/81:0")) {
+    if (!is_potential_v4l2_path(pathname)) return real_openat ? real_openat(dirfd, pathname, flags, mode) : -1;
+
+    const char* sys_char = (strncmp(pathname, "/sys/dev/char/81:", 17) == 0) ? pathname : NULL;
+    if (sys_char) {
+        int minor = atoi(sys_char + 17);
         const char* base_dir = vsouchi_get_vdev_path();
         char vpath[256];
-        snprintf(vpath, sizeof(vpath), "%s/video0", base_dir);
+        snprintf(vpath, sizeof(vpath), "%s/video%d", base_dir, minor);
         if (real_access ? (real_access(vpath, F_OK) == 0) : (access(vpath, F_OK) == 0)) {
-            if (strstr(pathname, "uevent")) return provide_virtual_uevent();
+            if (strstr(pathname, "uevent")) return provide_virtual_uevent(minor);
             if (strstr(pathname, "device")) {
                 char virtual_dir[256];
                 snprintf(virtual_dir, sizeof(virtual_dir), "%s/sys/class/video4linux", base_dir);
@@ -407,14 +462,14 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
             }
         }
     }
-    if (pathname && strncmp(pathname, "/sys/class/", 11) == 0) {
+    if (strncmp(pathname, "/sys/class/video4linux", 22) == 0) {
         const char* base_dir = vsouchi_get_vdev_path();
         char virtual_dir[256];
         snprintf(virtual_dir, sizeof(virtual_dir), "%s/sys/%s", base_dir, pathname + 5);
         int fd = real_openat ? real_openat(dirfd, virtual_dir, flags, mode) : -1;
         if (fd >= 0) return fd;
     }
-    if (pathname && strncmp(pathname, "/dev/", 5) == 0) {
+    if (strncmp(pathname, "/dev/video", 10) == 0 || (strncmp(pathname, "video", 5) == 0 && pathname[5] >= '0' && pathname[5] <= '9')) {
         int vfd = connect_to_broker(pathname);
         if (vfd >= 0) return vfd;
     }
@@ -425,13 +480,16 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
     init_pointers();
     mode_t mode = 0;
     if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); }
-    
-    if (pathname && strstr(pathname, "/sys/dev/char/81:0")) {
+    if (!is_potential_v4l2_path(pathname)) return real_openat64 ? real_openat64(dirfd, pathname, flags, mode) : -1;
+
+    const char* sys_char = (strncmp(pathname, "/sys/dev/char/81:", 17) == 0) ? pathname : NULL;
+    if (sys_char) {
+        int minor = atoi(sys_char + 17);
         const char* base_dir = vsouchi_get_vdev_path();
         char vpath[256];
-        snprintf(vpath, sizeof(vpath), "%s/video0", base_dir);
+        snprintf(vpath, sizeof(vpath), "%s/video%d", base_dir, minor);
         if (real_access ? (real_access(vpath, F_OK) == 0) : (access(vpath, F_OK) == 0)) {
-            if (strstr(pathname, "uevent")) return provide_virtual_uevent();
+            if (strstr(pathname, "uevent")) return provide_virtual_uevent(minor);
             if (strstr(pathname, "device")) {
                 char virtual_dir[256];
                 snprintf(virtual_dir, sizeof(virtual_dir), "%s/sys/class/video4linux", base_dir);
@@ -439,14 +497,14 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
             }
         }
     }
-    if (pathname && strncmp(pathname, "/sys/class/", 11) == 0) {
+    if (strncmp(pathname, "/sys/class/video4linux", 22) == 0) {
         const char* base_dir = vsouchi_get_vdev_path();
         char virtual_dir[256];
         snprintf(virtual_dir, sizeof(virtual_dir), "%s/sys/%s", base_dir, pathname + 5);
         int fd = real_openat64 ? real_openat64(dirfd, virtual_dir, flags, mode) : -1;
         if (fd >= 0) return fd;
     }
-    if (pathname && strncmp(pathname, "/dev/", 5) == 0) {
+    if (strncmp(pathname, "/dev/video", 10) == 0 || (strncmp(pathname, "video", 5) == 0 && pathname[5] >= '0' && pathname[5] <= '9')) {
         int vfd = connect_to_broker(pathname);
         if (vfd >= 0) return vfd;
     }
@@ -457,12 +515,16 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
 // INTERCEPTORS: SYSFS TOPOLOGY & STANDARD IO
 // ==========================================
 ssize_t readlink(const char *pathname, char *buf, size_t bufsiz) {
-    if (pathname && (strstr(pathname, "81:0") || strstr(pathname, "video0"))) {
+    init_pointers();
+    if (pathname && (strncmp(pathname, "/sys/dev/char/81:", 17) == 0 ||
+                     strncmp(pathname, "/sys/class/video4linux/video", 28) == 0)) {
+        int minor = parse_minor_from_path(pathname);
         const char* base_dir = vsouchi_get_vdev_path();
         char vpath[256];
-        snprintf(vpath, sizeof(vpath), "%s/video0", base_dir);
+        snprintf(vpath, sizeof(vpath), "%s/video%d", base_dir, minor);
         if (real_access ? (real_access(vpath, F_OK) == 0) : (access(vpath, F_OK) == 0)) {
-            const char *mock_link = "../../../devices/virtual/video4linux/video0";
+            char mock_link[128];
+            snprintf(mock_link, sizeof(mock_link), "../../../devices/virtual/video4linux/video%d", minor);
             size_t len = strlen(mock_link);
             if (len > bufsiz) len = bufsiz;
             memcpy(buf, mock_link, len);
@@ -470,27 +532,22 @@ ssize_t readlink(const char *pathname, char *buf, size_t bufsiz) {
         }
     }
 
-    if (!real_readlink) real_readlink = dlsym(RTLD_NEXT, "readlink");
     return real_readlink ? real_readlink(pathname, buf, bufsiz) : -1;
 }
 
 FILE *fopen(const char *pathname, const char *mode) {
-    if (pathname && (strstr(pathname, "81:0") || strstr(pathname, "video0"))) {
-        int fd = open(pathname, 0);
-        if (fd >= 0) return fdopen(fd, mode);
-    }
-
-    if (!real_fopen) real_fopen = dlsym(RTLD_NEXT, "fopen");
+    init_pointers();
+    if (!is_potential_v4l2_path(pathname)) return real_fopen ? real_fopen(pathname, mode) : NULL;
+    int fd = open(pathname, 0);
+    if (fd >= 0) return fdopen(fd, mode);
     return real_fopen ? real_fopen(pathname, mode) : NULL;
 }
 
 FILE *fopen64(const char *pathname, const char *mode) {
-    if (pathname && (strstr(pathname, "81:0") || strstr(pathname, "video0"))) {
-        int fd = open64(pathname, 0);
-        if (fd >= 0) return fdopen(fd, mode);
-    }
-
-    if (!real_fopen64) real_fopen64 = dlsym(RTLD_NEXT, "fopen64");
+    init_pointers();
+    if (!is_potential_v4l2_path(pathname)) return real_fopen64 ? real_fopen64(pathname, mode) : NULL;
+    int fd = open64(pathname, 0);
+    if (fd >= 0) return fdopen(fd, mode);
     return real_fopen64 ? real_fopen64(pathname, mode) : NULL;
 }
 
@@ -501,6 +558,7 @@ int close(int fd) {
     if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
         pthread_mutex_lock(&g_ipc_mutex);
         g_vsouchi_fds[fd] = 0;
+        g_vsouchi_fd_minor[fd] = 0;
         g_open_count--;
         if (g_open_count < 0) g_open_count = 0;
         
@@ -559,44 +617,39 @@ int ioctl(int fd, ioctl_req_t request, ...) {
 long syscall(long number, ...) {
     init_pointers();
 
-    if (number != SYS_openat && number != SYS_ioctl && number != SYS_mmap && number != SYS_close) {
-        va_list args;
-        va_start(args, number);
-        long a1 = va_arg(args, long); long a2 = va_arg(args, long);
-        long a3 = va_arg(args, long); long a4 = va_arg(args, long);
-        long a5 = va_arg(args, long); long a6 = va_arg(args, long);
-        va_end(args);
-        return real_syscall ? real_syscall(number, a1, a2, a3, a4, a5, a6) : -1;
-    }
-
     va_list args;
     va_start(args, number);
-    long a1 = va_arg(args, long); long a2 = va_arg(args, long);
-    long a3 = va_arg(args, long); long a4 = va_arg(args, long);
-    long a5 = va_arg(args, long); long a6 = va_arg(args, long);
+    long a1 = va_arg(args, long);
+    long a2 = va_arg(args, long);
+    long a3 = va_arg(args, long);
+    long a4 = va_arg(args, long);
+    long a5 = va_arg(args, long);
+    long a6 = va_arg(args, long);
     va_end(args);
 
     if (number == SYS_ioctl) {
         int fd = (int)a1;
-        if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) return ioctl(fd, (unsigned long)a2, (void *)a3); 
+        if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
+            return ioctl(fd, (ioctl_req_t)a2, (void *)a3);
+        }
     } 
     else if (number == SYS_mmap) {
         int fd = (int)a5; 
-        if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) return (long)mmap((void *)a1, (size_t)a2, (int)a3, (int)a4, fd, (off_t)a6);
+        if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
+            return (long)mmap((void *)a1, (size_t)a2, (int)a3, (int)a4, fd, (off_t)a6);
+        }
     } 
-    else if (number == SYS_close) {
-        int fd = (int)a1;
-        if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) return close(fd);
-    }
     else if (number == SYS_openat) {
         const char *path = (const char *)a2;
-        if (path) {
-            if (strncmp(path, "/sys/dev/char/81:0", 18) == 0) {
+        if (is_potential_v4l2_path(path)) {
+            const char* sys_char = (strncmp(path, "/sys/dev/char/81:", 17) == 0) ? path : NULL;
+            if (sys_char) {
+                int minor = atoi(sys_char + 17);
                 const char* base_dir = vsouchi_get_vdev_path();
                 char vpath[256];
-                snprintf(vpath, sizeof(vpath), "%s/video0", base_dir);
+                snprintf(vpath, sizeof(vpath), "%s/video%d", base_dir, minor);
                 if (real_access ? (real_access(vpath, F_OK) == 0) : (access(vpath, F_OK) == 0)) {
-                    if (strstr(path, "uevent")) return provide_virtual_uevent();
+                    if (strstr(path, "uevent")) return provide_virtual_uevent(minor);
                     if (strstr(path, "device")) {
                         char virtual_dir[256];
                         snprintf(virtual_dir, sizeof(virtual_dir), "%s/sys/class/video4linux", base_dir);
@@ -604,19 +657,18 @@ long syscall(long number, ...) {
                     }
                 }
             }
-            if (strncmp(path, "/sys/class/", 11) == 0) {
+            if (strncmp(path, "/sys/class/video4linux", 22) == 0) {
                 const char* base_dir = vsouchi_get_vdev_path();
                 char virtual_dir[256];
                 snprintf(virtual_dir, sizeof(virtual_dir), "%s/sys/%s", base_dir, path + 5);
                 long vfd = real_syscall ? real_syscall(SYS_openat, a1, (long)virtual_dir, a3, a4) : -1;
                 if (vfd >= 0) return vfd;
             }
-            if (strncmp(path, "/dev/", 5) == 0) {
+            if (strncmp(path, "/dev/video", 10) == 0 || (strncmp(path, "video", 5) == 0 && path[5] >= '0' && path[5] <= '9')) {
                 int vfd = connect_to_broker(path);
                 if (vfd >= 0) return vfd;
             }
         }
-        return real_syscall ? real_syscall(number, a1, a2, a3, a4, a5, a6) : -1;
     }
 
     return real_syscall ? real_syscall(number, a1, a2, a3, a4, a5, a6) : -1;

@@ -46,6 +46,7 @@ extern void* g_buffer_ptrs[MAX_BUFFERS];
 extern uint32_t g_buffer_count;
 extern uint32_t g_buffer_bytesused[MAX_BUFFERS];
 extern int g_buffer_state[MAX_BUFFERS]; // 0 = Dequeued, 1 = Queued, 2 = Done
+extern int g_event_fd;
 
 extern volatile int g_is_streaming;
 extern pthread_mutex_t g_v4l2_mutex;
@@ -59,5 +60,16 @@ void v4l2_send_reply(int socket_fd, uint32_t client_fd, int32_t status, void* pa
 void v4l2_send_error(int socket_fd, uint32_t client_fd, int32_t error_code);
 void v4l2_free_buffers();
 void v4l2_queue_dqbuf_request(int socket_fd, uint32_t client_fd, IpcV4l2Buffer* buf);
+
+static inline int read_exact(int fd, void *buf, size_t count) {
+    size_t total = 0;
+    char *p = (char *)buf;
+    while (total < count) {
+        ssize_t n = read(fd, p + total, count - total);
+        if (n <= 0) return -1;
+        total += (size_t)n;
+    }
+    return 0;
+}
 
 #endif // BRIDGE_V4L2_INTERNAL_H

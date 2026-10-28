@@ -18,10 +18,16 @@ public class CameraHardwareManager {
     private static final String TAG = "vSouchi:V4L2";
     private final Context context;
     private final NativeBridge bridge;
+    private final CameraEngine cameraEngine;
 
-    public CameraHardwareManager(Context context, NativeBridge bridge) {
+    public CameraHardwareManager(Context context, NativeBridge bridge, CameraEngine cameraEngine) {
         this.context = context;
         this.bridge = bridge;
+        this.cameraEngine = cameraEngine;
+    }
+
+    public CameraHardwareManager(Context context, NativeBridge bridge) {
+        this(context, bridge, null);
     }
 
     private String resolveCameraRole(CameraCharacteristics chars, Integer facing) {
@@ -140,6 +146,10 @@ public class CameraHardwareManager {
                     Float minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
                     boolean hasFocus = (minFocus != null && minFocus > 0.0f);
                     float focusMaxVal = hasFocus ? minFocus : 0.0f;
+
+                    if (cameraEngine != null && hasFocus) {
+                        cameraEngine.setMaxFocusDiopters(focusMaxVal);
+                    }
 
                     android.util.Range<Long> expRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
                     boolean hasExposure = (expRange != null);

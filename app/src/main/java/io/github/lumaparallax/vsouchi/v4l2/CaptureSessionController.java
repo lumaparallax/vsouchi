@@ -24,7 +24,13 @@ public class CaptureSessionController {
     private int stateFocusMode = CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO;
     private float stateFocusDistance = 0.0f;
     private int stateAeMode = CaptureRequest.CONTROL_AE_MODE_ON;
-    private long stateExposureTime = 15600000L; 
+    private long stateExposureTime = 15600000L;
+
+    private int templateType = CameraDevice.TEMPLATE_RECORD;
+
+    public void setTemplateType(int template) {
+        this.templateType = template;
+    }
 
     public void applyControl(int controlId, int value, CameraDevice device, Surface activeSurface, int activeFps, CameraCaptureSession session, Handler handler) {
         switch (controlId) {
@@ -52,7 +58,8 @@ public class CaptureSessionController {
 
     public void updateRepeatingRequest(CameraDevice cameraDevice, Surface activeSurface, int activeFps, CameraCaptureSession captureSession, Handler backgroundHandler) {
         try {
-            CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+            CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(templateType);
+            builder.addTarget(activeSurface);
             builder.addTarget(activeSurface);
             builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(activeFps, activeFps));
 

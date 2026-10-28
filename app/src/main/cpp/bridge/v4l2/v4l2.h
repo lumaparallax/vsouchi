@@ -22,6 +22,7 @@ int v4l2_get_fps();
 
 void v4l2_init_formats(int* android_formats, int count);
 int v4l2_get_android_format();
+void v4l2_set_cfa_pattern(int cfa);
 
 void* v4l2_get_buffer_ptr(int index);
 void v4l2_set_buffer_bytesused(int index, uint32_t size);

@@ -112,51 +112,53 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
     }
 
     if (req_clean == (uint32_t)VIDIOC_ENUM_FMT) {
-        struct v4l2_fmtdesc *fmt = (struct v4l2_fmtdesc *)arg;
-        IpcV4l2FmtDesc ipc_fmt;
-        memset(&ipc_fmt, 0, sizeof(IpcV4l2FmtDesc));
-        ipc_fmt.index = fmt->index;
+        struct v4l2_fmtdesc *f = (struct v4l2_fmtdesc *)arg;
+        IpcV4l2FmtDesc ipc_req = { .index = f->index, .type = f->type };
 
-        if (shim_ipc_transaction(CMD_ENUM_FMT, &ipc_fmt, sizeof(IpcV4l2FmtDesc), &ipc_fmt, sizeof(IpcV4l2FmtDesc)) != 0) return -1;
-        if (ipc_fmt.pixelformat == 0xFFFFFFFF) { errno = EINVAL; return -1; }
+        if (shim_ipc_transaction(CMD_ENUM_FMT, &ipc_req, sizeof(IpcV4l2FmtDesc), &ipc_req, sizeof(IpcV4l2FmtDesc)) != 0) {
+            return -1;
+        }
 
-        fmt->flags = ipc_fmt.flags;
-        strncpy((char *)fmt->description, ipc_fmt.description, sizeof(fmt->description));
-        fmt->pixelformat = ipc_fmt.pixelformat;
+        f->flags = ipc_req.flags;
+        f->pixelformat = ipc_req.pixelformat;
+        strncpy((char *)f->description, ipc_req.description, sizeof(f->description) - 1);
         return 0;
     }
 
     if (req_clean == (uint32_t)VIDIOC_G_FMT || req_clean == (uint32_t)VIDIOC_S_FMT || req_clean == (uint32_t)VIDIOC_TRY_FMT) {
         struct v4l2_format *f = (struct v4l2_format *)arg;
-        if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
-            uint32_t cmd = (req_clean == (uint32_t)VIDIOC_G_FMT) ? CMD_G_FMT :
-                           (req_clean == (uint32_t)VIDIOC_S_FMT) ? CMD_S_FMT : CMD_TRY_FMT;
-            
-            IpcV4l2Format send_fmt;
-            memset(&send_fmt, 0, sizeof(IpcV4l2Format));
-            
-            if (cmd != CMD_G_FMT) {
-                send_fmt.width = f->fmt.pix.width;
-                send_fmt.height = f->fmt.pix.height;
-                send_fmt.pixelformat = f->fmt.pix.pixelformat;
-            }
-
-            IpcV4l2Format ipc_fmt;
-            void* payload_ptr = (cmd == CMD_G_FMT) ? NULL : &send_fmt;
-            size_t payload_sz = (cmd == CMD_G_FMT) ? 0 : sizeof(IpcV4l2Format);
-
-            if (shim_ipc_transaction(cmd, payload_ptr, payload_sz, &ipc_fmt, sizeof(IpcV4l2Format)) != 0) return -1;
-
-            f->fmt.pix.width = ipc_fmt.width;
-            f->fmt.pix.height = ipc_fmt.height;
-            f->fmt.pix.pixelformat = ipc_fmt.pixelformat;
-            f->fmt.pix.bytesperline = ipc_fmt.bytesperline;
-            f->fmt.pix.sizeimage = ipc_fmt.sizeimage;
-            f->fmt.pix.field = ipc_fmt.field;
-            f->fmt.pix.colorspace = ipc_fmt.colorspace;
-            f->fmt.pix.priv = 0;
-            return 0; 
+        if (f->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+            errno = EINVAL;
+            return -1;
         }
+
+        uint32_t cmd = (req_clean == (uint32_t)VIDIOC_G_FMT) ? CMD_G_FMT :
+                       (req_clean == (uint32_t)VIDIOC_S_FMT) ? CMD_S_FMT : CMD_TRY_FMT;
+
+        IpcV4l2Format send_fmt;
+        memset(&send_fmt, 0, sizeof(IpcV4l2Format));
+
+        if (cmd != CMD_G_FMT) {
+            send_fmt.width = f->fmt.pix.width;
+            send_fmt.height = f->fmt.pix.height;
+            send_fmt.pixelformat = f->fmt.pix.pixelformat;
+        }
+
+        IpcV4l2Format ipc_fmt;
+        void* payload_ptr = (cmd == CMD_G_FMT) ? NULL : &send_fmt;
+        size_t payload_sz = (cmd == CMD_G_FMT) ? 0 : sizeof(IpcV4l2Format);
+
+        if (shim_ipc_transaction(cmd, payload_ptr, payload_sz, &ipc_fmt, sizeof(IpcV4l2Format)) != 0) return -1;
+
+        f->fmt.pix.width = ipc_fmt.width;
+        f->fmt.pix.height = ipc_fmt.height;
+        f->fmt.pix.pixelformat = ipc_fmt.pixelformat;
+        f->fmt.pix.bytesperline = ipc_fmt.bytesperline;
+        f->fmt.pix.sizeimage = ipc_fmt.sizeimage;
+        f->fmt.pix.field = ipc_fmt.field;
+        f->fmt.pix.colorspace = ipc_fmt.colorspace;
+        f->fmt.pix.priv = 0;
+        return 0;
     }
 
     if (req_clean == (uint32_t)VIDIOC_ENUM_FRAMESIZES) {
@@ -227,7 +229,6 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
             errno = -ipc_status;
             return -1;
         }
-
 
         if (safe_read(g_broker_fd, &ipc_req, sizeof(IpcV4l2ReqBufs)) <= 0) {
             pthread_mutex_unlock(&g_ipc_mutex);

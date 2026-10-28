@@ -55,6 +55,11 @@ public class CameraEngine {
 
         boolean needsNewReader = (activeSurface == null || width != activeWidth || height != activeHeight || format != activeFormat);
 
+        int template = (format == ImageFormat.RAW_SENSOR)
+                ? CameraDevice.TEMPLATE_STILL_CAPTURE
+                : CameraDevice.TEMPLATE_RECORD;
+        sessionController.setTemplateType(template);
+
         if (needsNewReader) {
             bridge.nativeDestroyImageReader();
             activeSurface = bridge.nativeCreateImageReader(width, height, format, 3);
@@ -119,7 +124,10 @@ public class CameraEngine {
         if (activeSurface == null || cameraDevice == null) return;
 
         try {
-            final CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+            int template = (activeFormat == ImageFormat.RAW_SENSOR)
+                    ? CameraDevice.TEMPLATE_STILL_CAPTURE
+                    : CameraDevice.TEMPLATE_RECORD;
+            final CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(template);
             builder.addTarget(activeSurface);
 
             // Zero latency hardware fix: forces Android to strictly respect the V4L2 requested framerate 

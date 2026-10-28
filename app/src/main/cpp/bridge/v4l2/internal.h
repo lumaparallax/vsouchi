@@ -15,9 +15,10 @@
 #define MAX_BUFFERS 8
 
 typedef struct {
-    uint32_t v4l2_fourcc;
-    const char* description;
+    uint32_t pixelformat;
+    char description[32];
     int android_format;
+    uint32_t flags;
 } FormatMap;
 
 typedef struct {
@@ -55,6 +56,7 @@ uint32_t v4l2_get_current_frame_size();
 uint32_t get_max_fps_for_res(uint32_t w, uint32_t h);
 
 void v4l2_send_reply(int socket_fd, uint32_t client_fd, int32_t status, void* payload, uint32_t sz);
+void v4l2_send_error(int socket_fd, uint32_t client_fd, int32_t error_code);
 void v4l2_free_buffers();
 void v4l2_queue_dqbuf_request(int socket_fd, uint32_t client_fd, IpcV4l2Buffer* buf);
 

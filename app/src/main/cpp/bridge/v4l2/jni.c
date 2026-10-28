@@ -90,6 +90,10 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
     (*env)->ReleaseIntArrayElements(env, fps, r, JNI_ABORT);
 }
 
+JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetCfaPattern(JNIEnv *env, jobject thiz, jint cfa) {
+    v4l2_set_cfa_pattern((int)cfa);
+}
+
 JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nativeSetFormats(JNIEnv *env, jobject thiz, jintArray formats) {
     jsize len = (*env)->GetArrayLength(env, formats);
     jint *body = (*env)->GetIntArrayElements(env, formats, 0);

@@ -12,6 +12,7 @@ public class NativeBridge {
 
     public native void nativeSetDeviceInfo(String deviceName, String cameraId);
     public native void nativeSetResolutions(int[] formats, int[] widths, int[] heights, int[] fps);
+    public native void nativeSetCfaPattern(int cfa);
     public native void nativeSetFormats(int[] formats);
     public native boolean nativeConnect(int udsFd);
     public native void nativeStartLoop(int socketFd);

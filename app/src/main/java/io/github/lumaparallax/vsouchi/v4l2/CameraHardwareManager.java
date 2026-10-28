@@ -6,6 +6,7 @@
 package io.github.lumaparallax.vsouchi.v4l2;
 
 import android.content.Context;
+import android.graphics.ImageFormat;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.params.StreamConfigurationMap;
@@ -76,8 +77,30 @@ public class CameraHardwareManager {
             StreamConfigurationMap map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
 
             if (map != null) {
-                int[] formats = map.getOutputFormats();
-                if (formats != null && formats.length > 0) {
+                int[] rawFormats = map.getOutputFormats();
+                boolean hasYuv = false;
+                boolean hasJpeg = false;
+                boolean hasRaw = false;
+                if (rawFormats != null) {
+                    /* Filter to formats supported by the native V4L2 bridge and prioritize YUV_420_888
+                     * so unsupported formats (e.g. PRIVATE, DEPTH16, HEIC) do not exhaust the 256-entry table.*/
+                    for (int fmt : rawFormats) {
+                        if (fmt == ImageFormat.YUV_420_888) hasYuv = true;
+                        else if (fmt == ImageFormat.JPEG) hasJpeg = true;
+                        else if (fmt == ImageFormat.RAW_SENSOR) hasRaw = true;
+                    }
+                }
+
+                int supportedCount = (hasYuv ? 1 : 0) + (hasJpeg ? 1 : 0) + (hasRaw ? 1 : 0);
+                if (supportedCount > 0) {
+                    int[] formats = new int[supportedCount];
+                    int fmtIdx = 0;
+                    if (hasYuv) formats[fmtIdx++] = ImageFormat.YUV_420_888;
+                    if (hasJpeg) formats[fmtIdx++] = ImageFormat.JPEG;
+                    if (hasRaw) formats[fmtIdx++] = ImageFormat.RAW_SENSOR;
+
+                    Integer cfa = chars.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT);
+                    bridge.nativeSetCfaPattern(cfa != null ? cfa : 0);
                     bridge.nativeSetFormats(formats);
 
                     int totalResCount = 0;
@@ -99,7 +122,7 @@ public class CameraHardwareManager {
                                 resFmts[idx] = fmt;
                                 resWs[idx] = s.getWidth();
                                 resHs[idx] = s.getHeight();
-                                
+
                                 long minFrameDuration = map.getOutputMinFrameDuration(fmt, s);
                                 if (minFrameDuration > 0) {
                                     resFps[idx] = (int) Math.round(1_000_000_000.0 / minFrameDuration);
@@ -110,7 +133,7 @@ public class CameraHardwareManager {
                             }
                         }
                     }
-                    
+
                     bridge.nativeSetResolutions(resFmts, resWs, resHs, resFps);
                     Logger.i(TAG, "Pushed " + totalResCount + " format-aware resolutions to Native Cache.");
 

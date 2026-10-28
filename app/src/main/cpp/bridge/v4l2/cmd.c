@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <android/log.h>
 #include <linux/videodev2.h>
 
@@ -23,6 +24,13 @@
 
 #define TAG "vSouchi:V4L2Cmd"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+
+#ifndef V4L2_PIX_FMT_MJPEG
+#define V4L2_PIX_FMT_MJPEG v4l2_fourcc('M', 'J', 'P', 'G')
+#endif
+#ifndef V4L2_PIX_FMT_SRGGB16
+#define V4L2_PIX_FMT_SRGGB16 v4l2_fourcc('R', 'G', '1', '6')
+#endif
 
 // Externs mapped from jni.c
 extern char g_bus_info[32];
@@ -59,6 +67,100 @@ static int create_shared_memory(const char *name, size_t size) {
     return -1;
 }
 
+static void v4l2_fill_ipc_format(IpcV4l2Format *fmt, uint32_t width, uint32_t height, uint32_t pixelformat) {
+    fmt->width = width;
+    fmt->height = height;
+    fmt->pixelformat = pixelformat;
+    fmt->field = 1; // V4L2_FIELD_NONE (Progressive)
+
+    switch (pixelformat) {
+        case v4l2_fourcc('N', 'V', '1', '2'):
+        case v4l2_fourcc('N', 'V', '2', '1'):
+        case v4l2_fourcc('Y', 'U', '1', '2'):
+        case v4l2_fourcc('Y', 'V', '1', '2'):
+            fmt->bytesperline = width;
+            fmt->sizeimage = (width * height * 3) / 2;
+            break;
+
+        case v4l2_fourcc('Y', 'U', 'Y', 'V'):
+        case v4l2_fourcc('R', 'G', '1', '6'):
+        case v4l2_fourcc('G', 'R', '1', '6'):
+        case v4l2_fourcc('G', 'B', '1', '6'):
+        case v4l2_fourcc('B', 'G', '1', '6'):
+            fmt->bytesperline = width * 2;
+            fmt->sizeimage = width * height * 2;
+            break;
+
+        case V4L2_PIX_FMT_MJPEG:
+        default:
+            fmt->bytesperline = 0; // Compressed bitstreams have no line stride
+            fmt->sizeimage = width * height * 2; // Conservative buffer boundary
+            break;
+    }
+
+    fmt->colorspace = get_correct_colorspace(width, height);
+}
+
+static void v4l2_negotiate_format(uint32_t req_w, uint32_t req_h, uint32_t req_fmt,
+                                  uint32_t *out_w, uint32_t *out_h, uint32_t *out_fmt, int *out_android_fmt) {
+    uint32_t chosen_fmt = 0;
+    int chosen_android_fmt = 35;
+
+    // 1. FourCC Validation: Verify requested format is supported
+    for (int i = 0; i < g_supported_format_count; ++i) {
+        if (g_supported_formats[i].pixelformat == req_fmt) {
+            chosen_fmt = req_fmt;
+            chosen_android_fmt = g_supported_formats[i].android_format;
+            break;
+        }
+    }
+
+    // V4L2 spec: Drivers must silently override unsupported formats with a default, never return an error
+    if (chosen_fmt == 0) {
+        chosen_fmt = (g_supported_format_count > 0) ? g_supported_formats[0].pixelformat : v4l2_fourcc('N', 'V', '1', '2');
+        chosen_android_fmt = (g_supported_format_count > 0) ? g_supported_formats[0].android_format : 35;
+    }
+
+    // 2. Resolution Clamping: Exact match or nearest Euclidean distance
+    if (g_res_count == 0) {
+        *out_w = req_w;
+        *out_h = req_h;
+        *out_fmt = chosen_fmt;
+        *out_android_fmt = chosen_android_fmt;
+        return;
+    }
+
+    int chosen_idx = -1;
+    uint32_t min_diff = UINT32_MAX;
+
+    for (int i = 0; i < g_res_count; ++i) {
+        if (g_resolutions[i].android_format == chosen_android_fmt) {
+            if (g_resolutions[i].width == req_w && g_resolutions[i].height == req_h) {
+                chosen_idx = i;
+                break;
+            }
+
+            int dw = (int)g_resolutions[i].width - (int)req_w;
+            int dh = (int)g_resolutions[i].height - (int)req_h;
+            uint32_t diff = (uint32_t)(abs(dw) + abs(dh));
+
+            if (diff < min_diff) {
+                min_diff = diff;
+                chosen_idx = i;
+            }
+        }
+    }
+
+    if (chosen_idx == -1) {
+        chosen_idx = 0;
+    }
+
+    *out_w = g_resolutions[chosen_idx].width;
+    *out_h = g_resolutions[chosen_idx].height;
+    *out_fmt = chosen_fmt;
+    *out_android_fmt = chosen_android_fmt;
+}
+
 int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const char* device_name, uint32_t kernel_version) {
     if (cmd == CMD_GET_CAPS) {
         IpcV4l2Caps caps;
@@ -71,124 +173,64 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         // V4L2_CAP_VIDEO_CAPTURE (0x01) | V4L2_CAP_EXT_PIX_FORMAT (0x00200000) | V4L2_CAP_STREAMING (0x04000000)
         uint32_t dev_caps = 0x04200001;
         caps.device_caps = dev_caps;
-        // V4L2_CAP_DEVICE_CAPS (0x80000000)
+        // V4L2_CAP_DEVICE_CAPS (0x80000000) signals to userspace that device_caps is valid
         caps.capabilities = dev_caps | 0x80000000;
         
         v4l2_send_reply(socket_fd, client_fd, 0, &caps, sizeof(IpcV4l2Caps));
         return 0;
 
     } else if (cmd == CMD_ENUM_FMT) {
-        IpcV4l2FmtDesc req_fmt;
-        read(socket_fd, &req_fmt, sizeof(IpcV4l2FmtDesc));
-        
-        if (req_fmt.index < (uint32_t)g_supported_format_count) {
-            IpcV4l2FmtDesc reply = { .index = req_fmt.index, .type = 1, .pixelformat = g_supported_formats[req_fmt.index].v4l2_fourcc };
-            snprintf(reply.description, sizeof(reply.description), "%s", g_supported_formats[req_fmt.index].description);
-            v4l2_send_reply(socket_fd, client_fd, 0, &reply, sizeof(IpcV4l2FmtDesc));
-        } else {
-            req_fmt.pixelformat = 0xFFFFFFFF; // Signal cutoff limit reached to V4L2 tools
-            v4l2_send_reply(socket_fd, client_fd, 0, &req_fmt, sizeof(IpcV4l2FmtDesc));
+        IpcV4l2FmtDesc req;
+        read(socket_fd, &req, sizeof(IpcV4l2FmtDesc));
+
+        if (req.index >= (uint32_t)g_supported_format_count || req.type != 1 /* V4L2_BUF_TYPE_VIDEO_CAPTURE */) {
+            v4l2_send_error(socket_fd, client_fd, EINVAL);
+            return 0;
         }
+
+        IpcV4l2FmtDesc reply;
+        memset(&reply, 0, sizeof(IpcV4l2FmtDesc));
+        reply.index = req.index;
+        reply.type = req.type;
+        reply.flags = g_supported_formats[req.index].flags;
+        reply.pixelformat = g_supported_formats[req.index].pixelformat;
+        snprintf(reply.description, sizeof(reply.description), "%s", g_supported_formats[req.index].description);
+
+        v4l2_send_reply(socket_fd, client_fd, 0, &reply, sizeof(IpcV4l2FmtDesc));
         return 0;
 
     } else if (cmd == CMD_G_FMT) {
-        uint32_t bpl = g_current_width;
-        if (g_current_format == v4l2_fourcc('J', 'P', 'E', 'G') || g_current_format == v4l2_fourcc('H', 'E', 'V', 'C')) {
-            bpl = 0; // V4L2 spec requires exactly 0 bytes per line for compressed formats
-        } else if (g_current_format == v4l2_fourcc('R', 'G', 'G', 'B') || g_current_format == v4l2_fourcc('R', 'G', '1', '0') || g_current_format == v4l2_fourcc('P', '0', '1', '0') || g_current_format == v4l2_fourcc('Y', 'U', 'Y', 'V')) {
-            bpl = g_current_width * 2;
-        }
-
-        IpcV4l2Format fmt = { 
-            .width = g_current_width, .height = g_current_height, 
-            .pixelformat = g_current_format, 
-            .field = 1, 
-            .colorspace = get_correct_colorspace(g_current_width, g_current_height),
-            .bytesperline = bpl, 
-            .sizeimage = v4l2_get_current_frame_size() 
-        };
-        v4l2_send_reply(socket_fd, client_fd, 0, &fmt, sizeof(IpcV4l2Format));
+        IpcV4l2Format reply;
+        memset(&reply, 0, sizeof(IpcV4l2Format));
+        v4l2_fill_ipc_format(&reply, g_current_width, g_current_height, g_current_format);
+        v4l2_send_reply(socket_fd, client_fd, 0, &reply, sizeof(IpcV4l2Format));
         return 0;
 
     } else if (cmd == CMD_TRY_FMT || cmd == CMD_S_FMT) {
         IpcV4l2Format req_fmt;
         read(socket_fd, &req_fmt, sizeof(IpcV4l2Format));
 
-        uint32_t req_pix = req_fmt.pixelformat;
-        int found = 0;
-        int target_android_fmt = 35; 
-        for (int i = 0; i < g_supported_format_count; i++) {
-            if (g_supported_formats[i].v4l2_fourcc == req_pix) {
-                found = 1;
-                target_android_fmt = g_supported_formats[i].android_format;
-                break;
-            }
-        }
-
-        // V4L2 spec: Drivers must silently override unsupported formats with a default, never return an error
-        if (!found && g_supported_format_count > 0) {
-            int fallback_idx = 0;
-            for (int i = 0; i < g_supported_format_count; i++) {
-                if (g_supported_formats[i].v4l2_fourcc == v4l2_fourcc('N', 'V', '1', '2') ||
-                    g_supported_formats[i].v4l2_fourcc == v4l2_fourcc('N', 'V', '2', '1')) {
-                    fallback_idx = i;
-                    break;
-                }
-            }
-            req_pix = g_supported_formats[fallback_idx].v4l2_fourcc;
-            target_android_fmt = g_supported_formats[fallback_idx].android_format;
-        }
-
-        uint32_t best_w = g_current_width;
-        uint32_t best_h = g_current_height;
-
-        if (g_res_count > 0) {
-            uint32_t min_diff = 0xFFFFFFFF;
-            int has_valid_format = 0;
-
-            for (int i = 0; i < g_res_count; i++) {
-                if (g_resolutions[i].android_format == target_android_fmt) {
-                    if (!has_valid_format) {
-                        best_w = g_resolutions[i].width;
-                        best_h = g_resolutions[i].height;
-                        has_valid_format = 1;
-                    }
-                    uint32_t diff = abs((int)g_resolutions[i].width - (int)req_fmt.width) +
-                                    abs((int)g_resolutions[i].height - (int)req_fmt.height);
-                    if (diff < min_diff) {
-                        min_diff = diff;
-                        best_w = g_resolutions[i].width;
-                        best_h = g_resolutions[i].height;
-                    }
-                }
-            }
-        }
+        uint32_t best_w, best_h, best_fmt;
+        int best_android_fmt;
+        v4l2_negotiate_format(req_fmt.width, req_fmt.height, req_fmt.pixelformat,
+                              &best_w, &best_h, &best_fmt, &best_android_fmt);
 
         if (cmd == CMD_S_FMT) {
+            if (g_is_streaming) {
+                v4l2_send_error(socket_fd, client_fd, EBUSY);
+                return 0;
+            }
             g_current_width = best_w;
             g_current_height = best_h;
-            g_current_format = req_pix;
-            g_current_android_format = target_android_fmt; 
+            g_current_format = best_fmt;
+            g_current_android_format = best_android_fmt;
             g_current_fps = get_max_fps_for_res(g_current_width, g_current_height);
         }
 
-        req_fmt.width = best_w;   
-        req_fmt.height = best_h;  
-        req_fmt.pixelformat = req_pix;
-        req_fmt.field = 1;
-        req_fmt.colorspace = get_correct_colorspace(g_current_width, g_current_height);
-
-        if (req_pix == v4l2_fourcc('J', 'P', 'E', 'G') || req_pix == v4l2_fourcc('H', 'E', 'V', 'C')) {
-            req_fmt.bytesperline = 0; 
-        } else if (req_pix == v4l2_fourcc('R', 'G', 'G', 'B') || req_pix == v4l2_fourcc('R', 'G', '1', '0') || req_pix == v4l2_fourcc('P', '0', '1', '0') || req_pix == v4l2_fourcc('Y', 'U', 'Y', 'V')) {
-            req_fmt.bytesperline = g_current_width * 2;
-        } else {
-            req_fmt.bytesperline = g_current_width;
-        }
-        
-        req_fmt.sizeimage = v4l2_get_current_frame_size();
-        
-        v4l2_send_reply(socket_fd, client_fd, 0, &req_fmt, sizeof(IpcV4l2Format));
+        IpcV4l2Format reply;
+        memset(&reply, 0, sizeof(IpcV4l2Format));
+        v4l2_fill_ipc_format(&reply, best_w, best_h, best_fmt);
+        v4l2_send_reply(socket_fd, client_fd, 0, &reply, sizeof(IpcV4l2Format));
         return 0;
     
     } else if (cmd == CMD_ENUM_FRAMESIZES) {
@@ -198,7 +240,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         
         int target_android_fmt = -1;
         for (int i = 0; i < g_supported_format_count; i++) {
-            if (g_supported_formats[i].v4l2_fourcc == req.pixel_format) {
+            if (g_supported_formats[i].pixelformat == req.pixel_format) {
                 target_android_fmt = g_supported_formats[i].android_format;
                 break;
             }
@@ -210,7 +252,8 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         for (int i = 0; i < g_res_count; i++) {
             if (g_resolutions[i].android_format == target_android_fmt) {
                 if (match_count == (int)req.index) {
-                    found_idx = i; break;
+                    found_idx = i;
+                    break;
                 }
                 match_count++;
             }
@@ -235,7 +278,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         
         int target_android_fmt = -1;
         for (int i = 0; i < g_supported_format_count; i++) {
-            if (g_supported_formats[i].v4l2_fourcc == req.pixel_format) {
+            if (g_supported_formats[i].pixelformat == req.pixel_format) {
                 target_android_fmt = g_supported_formats[i].android_format;
                 break;
             }
@@ -280,12 +323,12 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         int num_ctrls = 0;
         
         // User Controls (0x0098xxxx) - must remain sorted in ascending numerical order
-        ctrls[num_ctrls++] = 0x00980001;
+        ctrls[num_ctrls++] = 0x00980001; // V4L2_CTRL_CLASS_USER
         ctrls[num_ctrls++] = V4L2_CID_HFLIP;  // 0x00980914
         ctrls[num_ctrls++] = V4L2_CID_VFLIP;  // 0x00980915
         ctrls[num_ctrls++] = V4L2_CID_ROTATE; // 0x00980922
         // Camera Controls (0x009axxxx)
-        ctrls[num_ctrls++] = 0x009a0001; 
+        ctrls[num_ctrls++] = 0x009a0001; // V4L2_CTRL_CLASS_CAMERA
 
         if (g_has_exposure) {
             ctrls[num_ctrls++] = V4L2_CID_EXPOSURE_AUTO;     // 0x009a0901
@@ -300,7 +343,6 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         
         if (req_id & 0x80000000) { 
             uint32_t start_id = req_id & 0x0fffffff; 
-            
             for (int i = 0; i < num_ctrls; i++) {
                 if (ctrls[i] > start_id) {
                     target_id = ctrls[i];
@@ -412,7 +454,6 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
 
         int32_t ack = 0;
         v4l2_send_reply(socket_fd, client_fd, 0, &ack, sizeof(ack));
-
         return 4;
 
     } else if (cmd == CMD_G_PARM || cmd == CMD_S_PARM) {
@@ -424,7 +465,6 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
             if (req.fps_numerator > 1) requested_fps = req.fps_denominator / req.fps_numerator;
 
             uint32_t max_fps = get_max_fps_for_res(g_current_width, g_current_height);
-            
             if (requested_fps > max_fps) requested_fps = max_fps;
             // Prevent Android Image Signal Processor crashes caused by excessively slow frame requests
             if (requested_fps < 7) requested_fps = 7; 
@@ -501,7 +541,6 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
     } else if (cmd == CMD_DQBUF) {
         IpcV4l2Buffer buf;
         read(socket_fd, &buf, sizeof(IpcV4l2Buffer));
-        
         v4l2_queue_dqbuf_request(socket_fd, client_fd, &buf);
         return 0; 
 

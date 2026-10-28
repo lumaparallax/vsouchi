@@ -24,6 +24,29 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
+#ifndef V4L2_PIX_FMT_MJPEG
+#define V4L2_PIX_FMT_MJPEG v4l2_fourcc('M', 'J', 'P', 'G')
+#endif
+#ifndef V4L2_PIX_FMT_SRGGB16
+#define V4L2_PIX_FMT_SRGGB16 v4l2_fourcc('R', 'G', '1', '6')
+#endif
+#ifndef V4L2_FMT_FLAG_COMPRESSED
+#define V4L2_FMT_FLAG_COMPRESSED 0x0001
+#endif
+
+// Master template ordered by desktop ecosystem preference
+static FormatMap kMasterFormats[] = {
+    { v4l2_fourcc('N', 'V', '1', '2'), "YUV 4:2:0 (NV12)",           35,  0 },
+    { v4l2_fourcc('Y', 'U', 'Y', 'V'), "YUYV 4:2:2",                 35,  0 },
+    { v4l2_fourcc('N', 'V', '2', '1'), "YUV 4:2:0 (NV21)",           35,  0 },
+    { v4l2_fourcc('Y', 'U', '1', '2'), "Planar YU12 4:2:0",          35,  0 },
+    { v4l2_fourcc('Y', 'V', '1', '2'), "Planar YV12 4:2:0",          35,  0 },
+    { V4L2_PIX_FMT_MJPEG,              "Motion-JPEG",               256,  V4L2_FMT_FLAG_COMPRESSED },
+    { V4L2_PIX_FMT_SRGGB16,            "16-bit Bayer RGRG/GBGB",     32,  0 }
+};
+
+#define MASTER_FORMAT_COUNT (sizeof(kMasterFormats) / sizeof(kMasterFormats[0]))
+
 FormatMap g_supported_formats[32];
 int g_supported_format_count = 0;
 
@@ -67,14 +90,18 @@ static pthread_t g_worker_tid;
 static volatile int g_worker_running = 0;
 
 uint32_t get_correct_colorspace(uint32_t width, uint32_t height) {
-    if (width >= 1280 || height >= 720) return 3; 
-    return 1; 
+    if (width >= 1280 || height >= 720) return 8; // V4L2_COLORSPACE_REC709
+    return 1; // V4L2_COLORSPACE_SMPTE170M
 }
 
 uint32_t v4l2_get_current_frame_size() {
-    if (g_current_format == v4l2_fourcc('J', 'P', 'E', 'G') || g_current_format == v4l2_fourcc('H', 'E', 'V', 'C')) {
+    if (g_current_format == V4L2_PIX_FMT_MJPEG) {
         return g_current_width * g_current_height; 
-    } else if (g_current_format == v4l2_fourcc('R', 'G', 'G', 'B') || g_current_format == v4l2_fourcc('R', 'G', '1', '0') || g_current_format == v4l2_fourcc('P', '0', '1', '0') || g_current_format == v4l2_fourcc('Y', 'U', 'Y', 'V')) {
+    } else if (g_current_format == v4l2_fourcc('R', 'G', '1', '6') ||
+               g_current_format == v4l2_fourcc('G', 'R', '1', '6') ||
+               g_current_format == v4l2_fourcc('G', 'B', '1', '6') ||
+               g_current_format == v4l2_fourcc('B', 'G', '1', '6') ||
+               g_current_format == v4l2_fourcc('Y', 'U', 'Y', 'V')) {
         return g_current_width * g_current_height * 2; 
     }
     return (g_current_width * g_current_height * 3) / 2; 
@@ -91,48 +118,112 @@ uint32_t get_max_fps_for_res(uint32_t w, uint32_t h) {
     return 30; 
 }
 
-void v4l2_init_formats(int* android_formats, int count) {
-    g_supported_format_count = 0;
-    for (int i = 0; i < count; i++) {
-        int fmt = android_formats[i];
-        if (fmt == 35 && g_supported_format_count < 30) { 
-            g_supported_formats[g_supported_format_count++] = (FormatMap){v4l2_fourcc('N', 'V', '1', '2'), "YUV 4:2:0 (NV12)", 35};
-            g_supported_formats[g_supported_format_count++] = (FormatMap){v4l2_fourcc('N', 'V', '2', '1'), "YUV 4:2:0 (NV21)", 35};
-            g_supported_formats[g_supported_format_count++] = (FormatMap){v4l2_fourcc('Y', 'U', 'Y', 'V'), "YUYV 4:2:2", 35};
-            g_supported_formats[g_supported_format_count++] = (FormatMap){v4l2_fourcc('Y', 'U', '1', '2'), "Planar YU12 4:2:0", 35};
-            g_supported_formats[g_supported_format_count++] = (FormatMap){v4l2_fourcc('Y', 'V', '1', '2'), "Planar YV12 4:2:0", 35};
-        } else if (fmt == 256 && g_supported_format_count < 32) { 
-            g_supported_formats[g_supported_format_count++] = (FormatMap){v4l2_fourcc('J', 'P', 'E', 'G'), "Motion-JPEG", 256};
-        } else if (fmt == 32 && g_supported_format_count < 32) { 
-            g_supported_formats[g_supported_format_count++] = (FormatMap){v4l2_fourcc('R', 'G', 'G', 'B'), "16-bit Bayer RGRG/GBGB", 32};
-        } else if (fmt == 37 && g_supported_format_count < 32) { 
-            g_supported_formats[g_supported_format_count++] = (FormatMap){v4l2_fourcc('R', 'G', '1', '0'), "10-bit Bayer RGRG/GBGB", 37};
-        } else if (fmt == 1212500294 && g_supported_format_count < 32) { 
-            g_supported_formats[g_supported_format_count++] = (FormatMap){v4l2_fourcc('H', 'E', 'V', 'C'), "HEVC/H.265", 1212500294};
-        } else if (fmt == 54 && g_supported_format_count < 32) { 
-            g_supported_formats[g_supported_format_count++] = (FormatMap){v4l2_fourcc('P', '0', '1', '0'), "10-bit YUV 4:2:0", 54};
-        }
+void v4l2_set_cfa_pattern(int cfa) {
+    uint32_t fourcc = V4L2_PIX_FMT_SRGGB16;
+    const char *desc = "16-bit Bayer RGRG/GBGB";
+
+    switch (cfa) {
+        case 1:
+            fourcc = v4l2_fourcc('G', 'R', '1', '6');
+            desc = "16-bit Bayer GRGR/BGBG";
+            break;
+        case 2:
+            fourcc = v4l2_fourcc('G', 'B', '1', '6');
+            desc = "16-bit Bayer GBGB/RGRG";
+            break;
+        case 3:
+            fourcc = v4l2_fourcc('B', 'G', '1', '6');
+            desc = "16-bit Bayer BGBG/GRGR";
+            break;
+        case 0:
+        default:
+            fourcc = v4l2_fourcc('R', 'G', '1', '6');
+            desc = "16-bit Bayer RGRG/GBGB";
+            break;
     }
-    
-    if (g_supported_format_count > 0) {
-        g_current_format = g_supported_formats[0].v4l2_fourcc;
-        g_current_android_format = g_supported_formats[0].android_format;
+
+    for (size_t i = 0; i < MASTER_FORMAT_COUNT; ++i) {
+        if (kMasterFormats[i].android_format == 32) {
+            kMasterFormats[i].pixelformat = fourcc;
+            snprintf(kMasterFormats[i].description, sizeof(kMasterFormats[i].description), "%s", desc);
+            break;
+        }
     }
 }
 
-void v4l2_init_resolutions(int* fmts, int* widths, int* heights, int* fps, int count) {
+void v4l2_init_formats(int *android_formats, int count) {
+    g_supported_format_count = 0;
+
+    for (size_t m = 0; m < MASTER_FORMAT_COUNT; ++m) {
+        int req_android_fmt = kMasterFormats[m].android_format;
+        int is_supported = 0;
+
+        for (int i = 0; i < count; ++i) {
+            if (android_formats[i] == req_android_fmt) {
+                is_supported = 1;
+                break;
+            }
+        }
+
+        if (is_supported && g_supported_format_count < 32) {
+            g_supported_formats[g_supported_format_count++] = kMasterFormats[m];
+        }
+    }
+}
+
+void v4l2_init_resolutions(int* formats, int* widths, int* heights, int* fps, int count) {
+    if (count <= 0) return;
+
     g_res_count = (count > 256) ? 256 : count;
     for (int i = 0; i < g_res_count; i++) {
-        g_resolutions[i].android_format = fmts[i]; 
-        g_resolutions[i].width = widths[i];
-        g_resolutions[i].height = heights[i];
-        g_resolutions[i].max_fps = fps[i];
+        g_resolutions[i].android_format = formats[i];
+        g_resolutions[i].width = (uint32_t)widths[i];
+        g_resolutions[i].height = (uint32_t)heights[i];
+        g_resolutions[i].max_fps = (uint32_t)fps[i];
     }
-    if (g_res_count > 0) {
-        g_current_width = g_resolutions[0].width;
-        g_current_height = g_resolutions[0].height;
-        g_current_fps = g_resolutions[0].max_fps;
+
+    if (g_supported_format_count > 0) {
+        g_current_format = g_supported_formats[0].pixelformat;
+        g_current_android_format = g_supported_formats[0].android_format;
+    } else {
+        g_current_format = v4l2_fourcc('N', 'V', '1', '2');
+        g_current_android_format = 35;
     }
+
+    // Default boot to 1080p, then 720p, else first valid resolution
+    int target_idx = -1;
+    for (int i = 0; i < g_res_count; ++i) {
+        if (g_resolutions[i].android_format == g_current_android_format &&
+            g_resolutions[i].width == 1920 && g_resolutions[i].height == 1080) {
+            target_idx = i;
+            break;
+        }
+    }
+
+    if (target_idx == -1) {
+        for (int i = 0; i < g_res_count; ++i) {
+            if (g_resolutions[i].android_format == g_current_android_format &&
+                g_resolutions[i].width == 1280 && g_resolutions[i].height == 720) {
+                target_idx = i;
+                break;
+            }
+        }
+    }
+
+    if (target_idx == -1) {
+        for (int i = 0; i < g_res_count; ++i) {
+            if (g_resolutions[i].android_format == g_current_android_format) {
+                target_idx = i;
+                break;
+            }
+        }
+    }
+
+    if (target_idx == -1) target_idx = 0;
+
+    g_current_width = g_resolutions[target_idx].width;
+    g_current_height = g_resolutions[target_idx].height;
+    g_current_fps = get_max_fps_for_res(g_current_width, g_current_height);
 }
 
 int v4l2_get_android_format() { return g_current_android_format; }
@@ -160,6 +251,10 @@ void v4l2_send_reply(int socket_fd, uint32_t client_fd, int32_t status, void* pa
     pthread_mutex_lock(&g_bridge_tx_mutex);
     writev(socket_fd, iov, count);
     pthread_mutex_unlock(&g_bridge_tx_mutex);
+}
+
+void v4l2_send_error(int socket_fd, uint32_t client_fd, int32_t error_code) {
+    v4l2_send_reply(socket_fd, client_fd, -error_code, NULL, 0);
 }
 
 void v4l2_free_buffers() {
@@ -208,7 +303,7 @@ static void* persistent_dqbuf_worker(void* arg) {
         pthread_mutex_lock(&g_v4l2_mutex);
         int idx = -1;
         while (g_is_streaming) {
-            for (int i = 0; i < g_buffer_count; i++) { 
+            for (int i = 0; i < (int)g_buffer_count; i++) { 
                 if (g_buffer_state[i] == 2) { idx = i; break; } 
             }
             if (idx != -1) break;
@@ -277,17 +372,17 @@ int v4l2_is_buffer_ready_for_write(int index) {
 }
 
 void* v4l2_get_buffer_ptr(int index) {
-    if (index >= 0 && index < g_buffer_count) return g_buffer_ptrs[index];
+    if (index >= 0 && index < (int)g_buffer_count) return g_buffer_ptrs[index];
     return NULL;
 }
 
 uint32_t v4l2_get_buffer_size(int index) {
-    return (index >= 0 && index < g_buffer_count) ? g_buffer_lengths[index] : 0;
+    return (index >= 0 && index < (int)g_buffer_count) ? g_buffer_lengths[index] : 0;
 }
 
 int v4l2_get_queued_index() {
     pthread_mutex_lock(&g_v4l2_mutex);
-    for (int i = 0; i < g_buffer_count; i++) {
+    for (int i = 0; i < (int)g_buffer_count; i++) {
         if (g_buffer_state[i] == 1) { pthread_mutex_unlock(&g_v4l2_mutex); return i; }
     }
     pthread_mutex_unlock(&g_v4l2_mutex);
@@ -296,10 +391,10 @@ int v4l2_get_queued_index() {
 
 void v4l2_push_filled_buffer(int index) {
     pthread_mutex_lock(&g_v4l2_mutex);
-    if (index >= 0 && index < g_buffer_count) {
+    if (index >= 0 && index < (int)g_buffer_count) {
         
         // Zero-latency enforcement: Recycle unread frames so Android can immediately overwrite them
-        for (int i = 0; i < g_buffer_count; i++) {
+        for (int i = 0; i < (int)g_buffer_count; i++) {
             if (g_buffer_state[i] == 2) {
                 g_buffer_state[i] = 1; 
             }
@@ -312,7 +407,7 @@ void v4l2_push_filled_buffer(int index) {
 }
 
 void v4l2_set_buffer_bytesused(int index, uint32_t size) {
-    if (index >= 0 && index < g_buffer_count) {
+    if (index >= 0 && index < (int)g_buffer_count) {
         g_buffer_bytesused[index] = size;
     }
 }

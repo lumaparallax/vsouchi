@@ -61,6 +61,7 @@ typedef struct {
     uint32_t flags;
     char description[32];
     uint32_t pixelformat;
+    uint32_t reserved[4];
 } IpcV4l2FmtDesc;
 
 typedef struct {

@@ -30,6 +30,9 @@
 #ifndef V4L2_CTRL_WHICH_MAX_VAL
 #define V4L2_CTRL_WHICH_MAX_VAL 0x0f030000
 #endif
+#ifndef V4L2_BUF_CAP_SUPPORTS_ORPHANED_BUFS
+#define V4L2_BUF_CAP_SUPPORTS_ORPHANED_BUFS 0x00000010
+#endif
 
 #define MAX_EVENTS_PER_FD 16
 #define MAX_SUBS_PER_FD 16
@@ -505,7 +508,8 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         }
 
         req->count = ipc_req.count;
-        req->capabilities = V4L2_BUF_CAP_SUPPORTS_MMAP;
+        /* Driver safely orphans active mappings on REQBUFS(0) until munmap() */
+        req->capabilities = V4L2_BUF_CAP_SUPPORTS_MMAP | V4L2_BUF_CAP_SUPPORTS_ORPHANED_BUFS;
         req->flags = 0;
         memset(req->reserved, 0, sizeof(req->reserved));
         
@@ -572,6 +576,39 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         buf->field = 1; // V4L2_FIELD_NONE
         buf->bytesused = 0;
         buf->sequence = 0;
+        buf->timestamp.tv_sec = 0;
+        buf->timestamp.tv_usec = 0;
+        buf->reserved = 0;
+        buf->reserved2 = 0;
+        return 0;
+    }
+
+    if (req_clean == (uint32_t)VIDIOC_QBUF) {
+        CHECK_ARG();
+        struct v4l2_buffer *buf = (struct v4l2_buffer *)arg;
+        if (buf->type != V4L2_BUF_TYPE_VIDEO_CAPTURE || buf->memory != V4L2_MEMORY_MMAP) {
+            errno = EINVAL;
+            return -1;
+        }
+
+        if (buf->flags & 0x00080000 /* V4L2_BUF_FLAG_REQUEST_FD */) {
+            errno = EINVAL;
+            return -1;
+        }
+
+        IpcV4l2Buffer ipc_req;
+        memset(&ipc_req, 0, sizeof(IpcV4l2Buffer));
+        ipc_req.index = buf->index;
+        ipc_req.type = buf->type;
+        ipc_req.memory = buf->memory;
+
+        if (shim_ipc_transaction(CMD_QBUF, &ipc_req, sizeof(IpcV4l2Buffer), &ipc_req, sizeof(IpcV4l2Buffer)) != 0) return -1;
+
+        buf->flags = ipc_req.flags;
+        buf->bytesused = 0;
+        buf->sequence = 0;
+        buf->timestamp.tv_sec = 0;
+        buf->timestamp.tv_usec = 0;
         buf->reserved = 0;
         buf->reserved2 = 0;
         return 0;
@@ -657,12 +694,20 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         buf->length = ipc_req.length; 
         buf->flags = ipc_req.flags;
         buf->field = 1; // V4L2_FIELD_NONE
+        buf->sequence = ipc_req.sequence;
         buf->reserved = 0;
         buf->reserved2 = 0;
 
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        buf->timestamp = tv;
+        /* Convert hardware monotonic nanoseconds into timeval */
+        if (ipc_req.timestamp_ns > 0) {
+            buf->timestamp.tv_sec = (time_t)(ipc_req.timestamp_ns / 1000000000ULL);
+            buf->timestamp.tv_usec = (suseconds_t)((ipc_req.timestamp_ns % 1000000000ULL) / 1000ULL);
+        } else {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            buf->timestamp.tv_sec = ts.tv_sec;
+            buf->timestamp.tv_usec = ts.tv_nsec / 1000;
+        }
         return 0;
     }
 

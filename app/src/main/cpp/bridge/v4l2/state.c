@@ -66,6 +66,9 @@ uint32_t g_buffer_lengths[MAX_BUFFERS] = {0};
 void* g_buffer_ptrs[MAX_BUFFERS] = {NULL};
 uint32_t g_buffer_count = 0;
 uint32_t g_buffer_bytesused[MAX_BUFFERS] = {0};
+uint32_t g_buffer_sequence[MAX_BUFFERS] = {0};
+uint64_t g_buffer_timestamp[MAX_BUFFERS] = {0};
+uint32_t g_frame_sequence = 0;
 int g_buffer_state[MAX_BUFFERS] = {0};
 int g_event_fd = -1;
 
@@ -296,8 +299,11 @@ void v4l2_free_buffers() {
             close(g_buffer_fds[i]);
             g_buffer_fds[i] = -1;
         }
-        
+       
         g_buffer_lengths[i] = 0;
+        g_buffer_bytesused[i] = 0;
+        g_buffer_sequence[i] = 0;
+        g_buffer_timestamp[i] = 0;
         g_buffer_state[i] = 0;
     }
     g_buffer_count = 0;
@@ -349,13 +355,15 @@ static void* persistent_dqbuf_worker(void* arg) {
             if (idx != -1) break;
             pthread_cond_wait(&g_v4l2_cond, &g_v4l2_mutex); 
         }
-        
+
         if (idx != -1) {
             g_buffer_state[idx] = 0; 
             req.buf.index = idx; 
             req.buf.bytesused = g_buffer_bytesused[idx];
             req.buf.length = g_buffer_lengths[idx]; 
-            req.buf.flags = 0x00000001;
+            req.buf.flags = 0x00002001; /* V4L2_BUF_FLAG_MAPPED | V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC */
+            req.buf.sequence = g_buffer_sequence[idx];
+            req.buf.timestamp_ns = g_buffer_timestamp[idx];
         } else {
             req.buf.length = 0xFFFFFFFF; 
         }
@@ -487,6 +495,13 @@ void v4l2_abort_write(int index) {
 void v4l2_set_buffer_bytesused(int index, uint32_t size) {
     if (index >= 0 && index < (int)g_buffer_count) {
         g_buffer_bytesused[index] = size;
+    }
+}
+
+void v4l2_set_buffer_meta(int index, uint32_t sequence, uint64_t timestamp_ns) {
+    if (index >= 0 && index < (int)g_buffer_count) {
+        g_buffer_sequence[index] = sequence;
+        g_buffer_timestamp[index] = timestamp_ns;
     }
 }
 

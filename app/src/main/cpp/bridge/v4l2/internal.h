@@ -45,7 +45,10 @@ extern uint32_t g_buffer_lengths[MAX_BUFFERS];
 extern void* g_buffer_ptrs[MAX_BUFFERS];
 extern uint32_t g_buffer_count;
 extern uint32_t g_buffer_bytesused[MAX_BUFFERS];
-extern int g_buffer_state[MAX_BUFFERS]; // 0 = Dequeued, 1 = Queued, 2 = Done
+extern uint32_t g_buffer_sequence[MAX_BUFFERS];
+extern uint64_t g_buffer_timestamp[MAX_BUFFERS];
+extern uint32_t g_frame_sequence;
+extern int g_buffer_state[MAX_BUFFERS]; // 0 = Dequeued, 1 = Queued, 2 = Done, 3 = Leased
 extern int g_event_fd;
 
 extern volatile int g_is_streaming;

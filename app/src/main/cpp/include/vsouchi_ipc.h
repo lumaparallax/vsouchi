@@ -135,6 +135,8 @@ typedef struct {
     uint32_t length;
     uint32_t offset;
     uint32_t memory;
+    uint32_t sequence;
+    uint64_t timestamp_ns;
 } IpcV4l2Buffer;
 
 static inline const char* vsouchi_get_vdev_path(void) {

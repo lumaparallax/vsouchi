@@ -26,6 +26,7 @@ void v4l2_set_cfa_pattern(int cfa);
 
 void* v4l2_get_buffer_ptr(int index);
 void v4l2_set_buffer_bytesused(int index, uint32_t size);
+void v4l2_set_buffer_meta(int index, uint32_t sequence, uint64_t timestamp_ns);
 uint32_t v4l2_get_buffer_size(int index);
 int v4l2_get_queued_index();
 void v4l2_push_filled_buffer(int index);

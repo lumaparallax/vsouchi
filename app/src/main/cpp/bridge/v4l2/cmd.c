@@ -625,6 +625,20 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         }
 
         pthread_mutex_lock(&g_v4l2_mutex);
+        /* Reject queuing a buffer that is not currently in the dequeued state */
+        if (g_buffer_state[buf.index] != 0) {
+            pthread_mutex_unlock(&g_v4l2_mutex);
+            v4l2_send_error(socket_fd, client_fd, EINVAL);
+            return 0;
+        }
+        g_buffer_state[buf.index] = 1;
+        pthread_mutex_unlock(&g_v4l2_mutex);
+
+        buf.flags = 0x00002003; // MAPPED | QUEUED | TIMESTAMP_MONOTONIC
+        v4l2_send_reply(socket_fd, client_fd, 0, &buf, sizeof(IpcV4l2Buffer));
+        return 0;
+
+        pthread_mutex_lock(&g_v4l2_mutex);
         g_buffer_state[buf.index] = 1;
         pthread_mutex_unlock(&g_v4l2_mutex);
 
@@ -647,10 +661,28 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
             return 0;
         }
 
-        g_is_streaming = (cmd == CMD_STREAMON) ? 1 : 0;
-
+        int signal = 0;
         pthread_mutex_lock(&g_v4l2_mutex);
         if (cmd == CMD_STREAMON) {
+            /* V4L2 spec: reject streaming without allocated buffers */
+            if (g_buffer_count == 0) {
+                pthread_mutex_unlock(&g_v4l2_mutex);
+                v4l2_send_error(socket_fd, client_fd, EINVAL);
+                return 0;
+            }
+
+            /* Repeated STREAMON calls while already streaming must succeed as a no-op */
+            if (g_is_streaming) {
+                pthread_mutex_unlock(&g_v4l2_mutex);
+                char ack = 'A';
+                v4l2_send_reply(socket_fd, client_fd, 0, &ack, 1);
+                return 0;
+            }
+
+            g_is_streaming = 1;
+            g_frame_sequence = 0;
+            signal = 1;
+
             // Safely drain any leftover wake tokens without blocking if the descriptor is empty
             if (g_event_fd >= 0) {
                 struct pollfd pfd = { .fd = g_event_fd, .events = POLLIN };
@@ -660,6 +692,8 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
                 }
             }
         } else {
+            g_is_streaming = 0;
+            signal = 2;
             for (uint32_t i = 0; i < g_buffer_count; i++) {
                 g_buffer_state[i] = 0;
             }
@@ -673,7 +707,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         
         char ack = 'A'; 
         v4l2_send_reply(socket_fd, client_fd, 0, &ack, 1);
-        return (cmd == CMD_STREAMON) ? 1 : 2;
+        return signal;
 
     } else if (cmd == CMD_POLL) {
         int ready = 0;

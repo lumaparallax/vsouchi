@@ -20,6 +20,7 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "vSouchi:BridgeFrame", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "vSouchi:BridgeFrame", __VA_ARGS__)
 
+extern uint32_t g_frame_sequence;
 static AImageReader* g_ndk_reader = NULL;
 static uint8_t* g_temp_i420_buffer = NULL;
 static uint32_t g_temp_i420_size = 0;
@@ -28,6 +29,12 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
     AImage* image = NULL;
     media_status_t status = AImageReader_acquireLatestImage(reader, &image);
     if (status != AMEDIA_OK || image == NULL) return;
+
+    /* Extract hardware start-of-exposure timestamp and increment monotonic sequence */
+    int64_t raw_ts = 0;
+    AImage_getTimestamp(image, &raw_ts);
+    uint64_t ts_ns = (raw_ts > 0) ? (uint64_t)raw_ts : 0;
+    uint32_t seq = __atomic_fetch_add(&g_frame_sequence, 1, __ATOMIC_RELAXED);
 
     int index = v4l2_get_queued_index();
     if (index == -1 || !v4l2_is_buffer_ready_for_write(index)) { 
@@ -146,6 +153,7 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
     }
 
     AImage_delete(image);
+    v4l2_set_buffer_meta(index, seq, ts_ns);
     v4l2_push_filled_buffer(index);
 }
 

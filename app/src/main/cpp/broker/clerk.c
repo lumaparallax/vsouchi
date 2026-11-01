@@ -112,13 +112,29 @@ void* clerk_thread_func(void* arg) {
             pthread_mutex_unlock(&g_bridge_tx_mutex);
 
             pthread_mutex_lock(&ctx->lock);
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += 4;
+
+            int timed_out = 0;
             while (!ctx->response_ready && !ctx->fatal_error) {
-                pthread_cond_wait(&ctx->cond, &ctx->lock);
+                int rc = pthread_cond_timedwait(&ctx->cond, &ctx->lock, &ts);
+                if (rc == ETIMEDOUT && !ctx->response_ready) {
+                    timed_out = 1;
+                    break;
+                }
+            }
+
+            if (timed_out) {
+                pthread_mutex_unlock(&ctx->lock);
+                int32_t etimedout = -ETIMEDOUT;
+                write(client_fd, &etimedout, sizeof(int32_t));
+                continue;
             }
 
             if (ctx->fatal_error) {
                 pthread_mutex_unlock(&ctx->lock);
-                int32_t enodev = -19;
+                int32_t enodev = -ENODEV;
                 write(client_fd, &enodev, sizeof(int32_t));
                 break;
             }

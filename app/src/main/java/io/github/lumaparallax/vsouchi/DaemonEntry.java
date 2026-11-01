@@ -42,19 +42,6 @@ public class DaemonEntry extends IBridgeBinder.Stub {
 
     public static void main(String[] args) {
         Logger.i(TAG, "Starting vSouchi Shell Daemon...");
-
-        // Kills Java process if the shell pipe closes, ensuring no orphaned daemons
-        new Thread(() -> {
-            try {
-                int read = System.in.read();
-                Logger.i(TAG, "Stdin closed. Exiting...");
-            } catch (Exception e) {
-                Logger.e(TAG, "Stdin error", e);
-            } finally {
-                System.exit(0);
-            }
-        }, "ShellWatchdog").start();
-
         handler.post(() -> sInstance = new DaemonEntry());
         Looper.loop();
     }

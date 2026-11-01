@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 
-// Handles node creation, socket binding, and routing Bridge IPC replies to the correct Clerk.
+// Handles node creation, socket binding, and daemon lifecycle.
 #include <jni.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +14,9 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <sys/file.h>
+#include <signal.h>
+#include <errno.h>
 #include <time.h>
 #include "broker/internal.h"
 
@@ -24,6 +27,8 @@ int g_bridge_fd = -1;
 pthread_mutex_t g_bridge_tx_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t g_bridge_cond = PTHREAD_COND_INITIALIZER;
 
+static int g_lock_fd = -1;
+static int g_server_fd = -1;
 static JavaVM *g_jvm = NULL;
 static jclass g_daemon_entry_class = NULL;
 static jmethodID g_request_wake_mid = NULL;
@@ -165,6 +170,37 @@ bridge_died:
     return NULL;
 }
 
+static void daemon_signal_handler(int sig) {
+    const char* base_dir = vsouchi_get_vdev_path();
+
+    if (g_bridge_fd >= 0) {
+        IpcOutboundHeader hdr = { .client_fd = 0, .cmd = CMD_DISCONNECT };
+        write(g_bridge_fd, &hdr, sizeof(hdr));
+        close(g_bridge_fd);
+        g_bridge_fd = -1;
+    }
+
+    if (g_server_fd >= 0) {
+        close(g_server_fd);
+        g_server_fd = -1;
+    }
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/video0", base_dir);
+    unlink(path);
+
+    snprintf(path, sizeof(path), "%s/vsouchi.pid", base_dir);
+    unlink(path);
+
+    if (g_lock_fd >= 0) {
+        flock(g_lock_fd, LOCK_UN);
+        close(g_lock_fd);
+        g_lock_fd = -1;
+    }
+
+    _exit(0);
+}
+
 JNIEXPORT jint JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_nativeGetUds(JNIEnv *env, jclass clazz) {
     pthread_mutex_lock(&g_bridge_tx_mutex);
     if (g_bridge_fd >= 0) {
@@ -198,6 +234,29 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
     const char* base_dir = vsouchi_get_vdev_path();
     mkdir(base_dir, 0777);
 
+    char lock_path[512];
+    snprintf(lock_path, sizeof(lock_path), "%s/vsouchi.lock", base_dir);
+    g_lock_fd = open(lock_path, O_RDWR | O_CREAT, 0666);
+    if (g_lock_fd < 0 || flock(g_lock_fd, LOCK_EX | LOCK_NB) < 0) {
+        printf("[Broker] Failed to acquire daemon lock. Another instance may be running.\n");
+        _exit(1);
+    }
+
+    char pid_path[512];
+    snprintf(pid_path, sizeof(pid_path), "%s/vsouchi.pid", base_dir);
+    FILE *pf = fopen(pid_path, "w");
+    if (pf) {
+        fprintf(pf, "%d\n", getpid());
+        fclose(pf);
+    }
+
+    signal(SIGTERM, daemon_signal_handler);
+    signal(SIGINT, daemon_signal_handler);
+    signal(SIGHUP, daemon_signal_handler);
+
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     char path[256];
     snprintf(path, sizeof(path), "%s/sys", base_dir); mkdir(path, 0777);
     snprintf(path, sizeof(path), "%s/sys/class", base_dir); mkdir(path, 0777);
@@ -213,6 +272,8 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
     unlink(sock_path);
 
     int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    g_server_fd = server_fd;
+
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
@@ -221,7 +282,9 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
     bind(server_fd, (struct sockaddr*)&addr, sizeof(addr));
     listen(server_fd, 10);
 
-    printf("[Broker] Published Virtual Node: %s\n", sock_path);
+    printf("[vSouchi] Daemon started (PID %d)\n", getpid());
+    printf("[vSouchi] Virtual Node: %s\n", sock_path);
+    fflush(stdout);
 
     subsystem_init_watchdog();
 
@@ -249,16 +312,19 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
 
             if (ctx) {
                 printf("[Broker] Shim connected (FD %d).\n", new_fd);
+                fflush(stdout);
                 pthread_t clerk_tid;
                 pthread_create(&clerk_tid, NULL, clerk_thread_func, ctx);
                 pthread_detach(clerk_tid);
             } else {
                 printf("[Broker] Max clients reached. Rejecting connection.\n");
+                fflush(stdout);
                 close(new_fd);
             }
         }
     }
 
     close(server_fd);
+    g_server_fd = -1;
     unlink(sock_path);
 }

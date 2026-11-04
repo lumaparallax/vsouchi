@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <sys/uio.h>
+#include <sys/socket.h>
 #include <linux/videodev2.h>
 #include <pthread.h>
 #include <sys/time.h>
@@ -196,17 +197,27 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
         uint32_t cmd = CMD_REQBUFS;
         struct iovec iov[2] = { { &cmd, sizeof(uint32_t) }, { &ipc_req, sizeof(IpcV4l2ReqBufs) } };
         
-        if (writev(g_broker_fd, iov, 2) <= 0) {
+        struct msghdr msg = {0};
+        msg.msg_iov = iov;
+        msg.msg_iovlen = 2;
+
+        if (sendmsg(g_broker_fd, &msg, MSG_NOSIGNAL) <= 0) {
             pthread_mutex_unlock(&g_ipc_mutex);
-            errno = EIO; return -1;
+            errno = ENODEV; return -1;
         }
 
         int32_t ipc_status = 0;
-        if (safe_read(g_broker_fd, &ipc_status, sizeof(int32_t)) <= 0 || ipc_status < 0) {
+        if (safe_read(g_broker_fd, &ipc_status, sizeof(int32_t)) <= 0) {
             pthread_mutex_unlock(&g_ipc_mutex);
-            errno = (ipc_status < 0) ? -ipc_status : EIO; 
+            errno = ENODEV; return -1;
+        }
+
+        if (ipc_status < 0) {
+            pthread_mutex_unlock(&g_ipc_mutex);
+            errno = -ipc_status;
             return -1;
         }
+
 
         if (safe_read(g_broker_fd, &ipc_req, sizeof(IpcV4l2ReqBufs)) <= 0) {
             pthread_mutex_unlock(&g_ipc_mutex);

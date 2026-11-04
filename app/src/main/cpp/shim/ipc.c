@@ -21,28 +21,46 @@ pthread_mutex_t g_ipc_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int safe_write(int fd, const void *buf, size_t count) {
     if (fd < 0) return -1;
-    int res = send(fd, buf, count, MSG_NOSIGNAL);
-    if (res <= 0) {
-        if (real_close) real_close(fd);
-        if (fd == g_broker_fd) g_broker_fd = -1;
-        shim_clear_memfds();
+    size_t total = 0;
+    const char *p = (const char *)buf;
+    while (total < count) {
+        ssize_t res = send(fd, p + total, count - total, MSG_NOSIGNAL);
+        if (res <= 0) {
+            if (real_close) real_close(fd);
+            if (fd == g_broker_fd) g_broker_fd = -1;
+            shim_clear_memfds();
+            return -1;
+        }
+        total += (size_t)res;
     }
-    return res;
+    return (int)total;
 }
 
 int safe_read(int fd, void *buf, size_t count) {
     if (fd < 0) return -1;
-    int res = read(fd, buf, count);
-    if (res <= 0) {
-        if (real_close) real_close(fd);
-        if (fd == g_broker_fd) g_broker_fd = -1;
-        shim_clear_memfds();
+    size_t total = 0;
+    char *p = (char *)buf;
+    while (total < count) {
+        ssize_t res = read(fd, p + total, count - total);
+        if (res <= 0) {
+            if (real_close) real_close(fd);
+            if (fd == g_broker_fd) g_broker_fd = -1;
+            shim_clear_memfds();
+            return -1;
+        }
+        total += (size_t)res;
     }
-    return res;
+    return (int)total;
 }
 
 int shim_ipc_transaction(uint32_t cmd, const void* req_payload, size_t req_sz, void* resp_payload, size_t resp_sz) {
     pthread_mutex_lock(&g_ipc_mutex);
+
+    if (g_broker_fd < 0) {
+        pthread_mutex_unlock(&g_ipc_mutex);
+        errno = ENODEV;
+        return -1;
+    }
 
     struct iovec iov[2];
     iov[0].iov_base = &cmd;
@@ -55,10 +73,19 @@ int shim_ipc_transaction(uint32_t cmd, const void* req_payload, size_t req_sz, v
         count = 2;
     }
 
-    if (writev(g_broker_fd, iov, count) <= 0) goto error;
+    struct msghdr msg = {0};
+    msg.msg_iov = iov;
+    msg.msg_iovlen = count;
+
+    if (sendmsg(g_broker_fd, &msg, MSG_NOSIGNAL) <= 0) {
+        if (real_close) real_close(g_broker_fd);
+        g_broker_fd = -1;
+        shim_clear_memfds();
+        goto dev_disconnected;
+    }
 
     int32_t ipc_status = 0;
-    if (safe_read(g_broker_fd, &ipc_status, sizeof(int32_t)) <= 0) goto error;
+    if (safe_read(g_broker_fd, &ipc_status, sizeof(int32_t)) <= 0) goto dev_disconnected;
 
     if (ipc_status < 0) {
         pthread_mutex_unlock(&g_ipc_mutex);
@@ -67,19 +94,20 @@ int shim_ipc_transaction(uint32_t cmd, const void* req_payload, size_t req_sz, v
     }
 
     if (resp_payload && resp_sz > 0) {
-        if (safe_read(g_broker_fd, resp_payload, resp_sz) <= 0) goto error;
+        if (safe_read(g_broker_fd, resp_payload, resp_sz) <= 0) goto dev_disconnected;
     }
 
     pthread_mutex_unlock(&g_ipc_mutex);
     return 0;
 
-error:
+dev_disconnected:
     pthread_mutex_unlock(&g_ipc_mutex);
-    errno = EIO;
+    errno = ENODEV;
     return -1;
 }
 
 int recv_single_fd(int socket) {
+    if (socket < 0) return -1;
     struct msghdr msg = {0};
     char m_buffer[1];
     struct iovec io = { .iov_base = m_buffer, .iov_len = 1 };

@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <time.h>
 #include "broker/internal.h"
 
 ClientContext g_clients[MAX_CLIENTS];
@@ -21,6 +22,59 @@ pthread_mutex_t g_clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int g_bridge_fd = -1;
 pthread_mutex_t g_bridge_tx_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t g_bridge_cond = PTHREAD_COND_INITIALIZER;
+
+static JavaVM *g_jvm = NULL;
+static jclass g_daemon_entry_class = NULL;
+static jmethodID g_request_wake_mid = NULL;
+
+void broker_trigger_wake(void) {
+    if (!g_jvm || !g_daemon_entry_class || !g_request_wake_mid) return;
+    JNIEnv *env = NULL;
+    int attached = 0;
+    jint res = (*g_jvm)->GetEnv(g_jvm, (void**)&env, JNI_VERSION_1_6);
+    if (res == JNI_EDETACHED) {
+        if ((*g_jvm)->AttachCurrentThread(g_jvm, &env, NULL) == 0) {
+            attached = 1;
+        }
+    }
+    if (env) {
+        (*env)->CallStaticVoidMethod(env, g_daemon_entry_class, g_request_wake_mid);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
+    }
+    if (attached) {
+        (*g_jvm)->DetachCurrentThread(g_jvm);
+    }
+}
+
+int broker_ensure_bridge(void) {
+    pthread_mutex_lock(&g_bridge_tx_mutex);
+    if (g_bridge_fd >= 0) {
+        pthread_mutex_unlock(&g_bridge_tx_mutex);
+        return 0;
+    }
+
+    printf("[Broker] Bridge connection offline. Requesting on-demand APK wake...\n");
+    broker_trigger_wake();
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 4; // 4-second timeout for Android to start service
+
+    while (g_bridge_fd == -1) {
+        int rc = pthread_cond_timedwait(&g_bridge_cond, &g_bridge_tx_mutex, &ts);
+        if (rc != 0 && g_bridge_fd == -1) {
+            printf("[Broker] APK wake timeout after 4s.\n");
+            pthread_mutex_unlock(&g_bridge_tx_mutex);
+            return -1;
+        }
+    }
+
+    pthread_mutex_unlock(&g_bridge_tx_mutex);
+    return 0;
+}
 
 void* router_thread_func(void* arg) {
     while (1) {
@@ -84,6 +138,13 @@ void* router_thread_func(void* arg) {
 
 bridge_died:
     printf("[Broker] Bridge connection lost!\n");
+    pthread_mutex_lock(&g_bridge_tx_mutex);
+    if (g_bridge_fd >= 0) {
+        close(g_bridge_fd);
+        g_bridge_fd = -1;
+    }
+    pthread_mutex_unlock(&g_bridge_tx_mutex);
+
     pthread_mutex_lock(&g_clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (g_clients[i].active) {
@@ -99,22 +160,43 @@ bridge_died:
 }
 
 JNIEXPORT jint JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_nativeGetUds(JNIEnv *env, jclass clazz) {
+    pthread_mutex_lock(&g_bridge_tx_mutex);
+    if (g_bridge_fd >= 0) {
+        close(g_bridge_fd);
+        g_bridge_fd = -1;
+    }
+
     int sv[2];
-    socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
+        pthread_mutex_unlock(&g_bridge_tx_mutex);
+        return -1;
+    }
     g_bridge_fd = sv[0];
+
+    pthread_t router_tid;
+    pthread_create(&router_tid, NULL, router_thread_func, NULL);
+    pthread_detach(router_tid);
+
+    pthread_cond_broadcast(&g_bridge_cond);
+    pthread_mutex_unlock(&g_bridge_tx_mutex);
+
+    printf("[Broker] Reconnected to vSouchi Android App (Bridge FD %d)!\n", g_bridge_fd);
     return sv[1]; 
 }
 
 JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNIEnv *env, jclass clazz) {
+    (*env)->GetJavaVM(env, &g_jvm);
+    g_daemon_entry_class = (jclass)(*env)->NewGlobalRef(env, clazz);
+    g_request_wake_mid = (*env)->GetStaticMethodID(env, clazz, "requestWakeApp", "()V");
+
     const char* base_dir = vsouchi_get_vdev_path();
-    
     mkdir(base_dir, 0777);
 
     char path[256];
     snprintf(path, sizeof(path), "%s/sys", base_dir); mkdir(path, 0777);
     snprintf(path, sizeof(path), "%s/sys/class", base_dir); mkdir(path, 0777);
     snprintf(path, sizeof(path), "%s/sys/class/video4linux", base_dir); mkdir(path, 0777);
-    
+
     // Create empty file so target apps don't skip the node
     snprintf(path, sizeof(path), "%s/sys/class/video4linux/video0", base_dir); 
     int dummy_fd = open(path, O_CREAT | O_RDWR, 0666);
@@ -134,13 +216,6 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
     listen(server_fd, 10);
 
     printf("[Broker] Published Virtual Node: %s\n", sock_path);
-    while (g_bridge_fd == -1) usleep(50000); 
-
-    printf("[Broker] Android App connected to socketpair!\n");
-
-    pthread_t router_tid;
-    pthread_create(&router_tid, NULL, router_thread_func, NULL);
-    pthread_detach(router_tid);
 
     subsystem_init_watchdog();
 

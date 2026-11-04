@@ -92,11 +92,7 @@ public class ForegroundService extends Service {
                             cameraEngine.destroy();
                         }
                         
-                        if (Build.VERSION.SDK_INT >= 24) {
-                            stopForeground(Service.STOP_FOREGROUND_REMOVE);
-                        } else {
-                            stopForeground(true);
-                        }
+                        stopForeground(Service.STOP_FOREGROUND_REMOVE);
                         
                         // Kill the service so it doesn't run infinitely in the background after disconnect.
                         stopSelf();
@@ -106,8 +102,7 @@ public class ForegroundService extends Service {
                 }
             }
         }
-        // Tell OS to recreate if killed, though the daemon will usually drive this.
-        return START_STICKY; 
+        return START_NOT_STICKY;
     }
 
     @Override
@@ -124,3 +119,4 @@ public class ForegroundService extends Service {
         return null;
     }
 }
+

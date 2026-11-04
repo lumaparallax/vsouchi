@@ -34,8 +34,11 @@ typedef unsigned long ioctl_req_t;
 #define LOGI(...) SHIM_LOGI("vSouchi:ShimIO", __VA_ARGS__)
 
 int g_vsouchi_fds[1024] = {0};
-int g_shim_memfds[16] = {-1}; 
-int g_broker_fd = -1; 
+int g_shim_memfds[16] = {
+    -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1
+};
+int g_broker_fd = -1;
 static int g_open_count = 0; 
 
 int (*real_open)(const char *pathname, int flags, ...) = NULL;
@@ -128,7 +131,7 @@ static int connect_to_broker() {
         return -1;
     }
 
-    if (g_open_count == 0) {
+    if (g_open_count == 0 || g_broker_fd < 0) {
         const char* base_dir = vsouchi_get_vdev_path();
 
         char real_path[256];
@@ -140,10 +143,59 @@ static int connect_to_broker() {
         
         if (connect(g_broker_fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
             LOGI("Failed to connect to Broker at %s", real_path);
-            close(g_broker_fd);
+            if (real_close) real_close(g_broker_fd);
+            else close(g_broker_fd);
             g_broker_fd = -1;
             real_close(dummy_fd);
             pthread_mutex_unlock(&g_ipc_mutex);
+            errno = ENODEV;
+            return -1;
+        }
+
+        IpcHandshakePacket hs = {
+            .magic = VSOUCHI_IPC_MAGIC,
+            .version = VSOUCHI_PROTOCOL_VER,
+            .reserved = 0
+        };
+
+        if (safe_write(g_broker_fd, &hs, sizeof(hs)) != sizeof(hs)) {
+            LOGI("Failed to send handshake to Broker");
+            if (g_broker_fd >= 0) {
+                if (real_close) real_close(g_broker_fd);
+                else close(g_broker_fd);
+                g_broker_fd = -1;
+            }
+            real_close(dummy_fd);
+            pthread_mutex_unlock(&g_ipc_mutex);
+            errno = EIO;
+            return -1;
+        }
+
+        int32_t ack = 0;
+        if (safe_read(g_broker_fd, &ack, sizeof(int32_t)) != sizeof(int32_t)) {
+            LOGI("Failed to receive handshake ACK from Broker");
+            if (g_broker_fd >= 0) {
+                if (real_close) real_close(g_broker_fd);
+                else close(g_broker_fd);
+                g_broker_fd = -1;
+            }
+            real_close(dummy_fd);
+            pthread_mutex_unlock(&g_ipc_mutex);
+            errno = EIO;
+            return -1;
+        }
+
+        if (ack != 0) {
+            SHIM_LOGE("vSouchi:Shim", "Protocol mismatch! Broker rejected connection (status: %d, expected version: %u)",
+                      ack, (uint32_t)VSOUCHI_PROTOCOL_VER);
+            if (g_broker_fd >= 0) {
+                if (real_close) real_close(g_broker_fd);
+                else close(g_broker_fd);
+                g_broker_fd = -1;
+            }
+            real_close(dummy_fd);
+            pthread_mutex_unlock(&g_ipc_mutex);
+            errno = (ack < 0) ? -ack : EPROTO;
             return -1;
         }
     }
@@ -389,10 +441,13 @@ FILE *fopen64(const char *pathname, const char *mode) {
 
 int close(int fd) {
     init_pointers();
+    int saved_errno = errno;
+
     if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
         pthread_mutex_lock(&g_ipc_mutex);
         g_vsouchi_fds[fd] = 0;
         g_open_count--;
+        if (g_open_count < 0) g_open_count = 0;
         
         if (g_open_count == 0 && g_broker_fd != -1) {
             real_close(g_broker_fd);
@@ -401,7 +456,11 @@ int close(int fd) {
         }
         pthread_mutex_unlock(&g_ipc_mutex);
     }
-    return real_close ? real_close(fd) : -1;
+    int ret = real_close ? real_close(fd) : -1;
+    if (ret == 0) {
+        errno = saved_errno;
+    }
+    return ret;
 }
 
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {

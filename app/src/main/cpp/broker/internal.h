@@ -36,7 +36,9 @@ extern pthread_mutex_t g_clients_mutex;
 
 extern int g_bridge_fd;
 extern pthread_mutex_t g_bridge_tx_mutex;
+extern pthread_cond_t g_bridge_cond;
 
+int broker_ensure_bridge(void);
 void* clerk_thread_func(void* arg);
 
 // Generic Subsystem Hooks (Implemented by specific subsystem monitors, e.g., V4L2)

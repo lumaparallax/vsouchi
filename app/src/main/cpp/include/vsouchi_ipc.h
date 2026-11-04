@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define VSOUCHI_IPC_MAGIC    0x76654476 // "vDev"
+#define VSOUCHI_PROTOCOL_VER 1
 #define CMD_GET_CAPS   0x10
 #define CMD_ENUM_FMT   0x11
 #define CMD_G_FMT      0x12
@@ -35,6 +37,12 @@
 #define CMD_S_CTRL     0x32
 
 #define BROKER_NACK_EBUSY 0xEE 
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t reserved;
+} IpcHandshakePacket;
 
 typedef struct {
     char driver[16];

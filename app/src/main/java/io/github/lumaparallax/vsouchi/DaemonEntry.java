@@ -21,6 +21,7 @@ public class DaemonEntry extends IBridgeBinder.Stub {
 
     private static final String TAG = "vSouchi:Daemon";
     static final Handler handler;
+    private static volatile DaemonEntry sInstance;
 
     static {
         try { if (Looper.getMainLooper() == null) Looper.prepareMainLooper(); } catch (Exception ignored) {}
@@ -54,13 +55,22 @@ public class DaemonEntry extends IBridgeBinder.Stub {
             }
         }, "ShellWatchdog").start();
 
-        handler.post(() -> new DaemonEntry());
+        handler.post(() -> sInstance = new DaemonEntry());
         Looper.loop();
     }
 
     public DaemonEntry() {
+        sInstance = this;
         new Thread(DaemonEntry::start, "vsouchi-broker").start();
-        ActivityLauncher.wakeApp(this, handler);
+        ActivityLauncher.wakeApp(this);
+    }
+
+    @Keep
+    public static void requestWakeApp() {
+        if (sInstance != null) {
+            Logger.i(TAG, "Broker triggered on-demand APK re-wake.");
+            handler.post(() -> ActivityLauncher.wakeApp(sInstance));
+        }
     }
 
     @Override

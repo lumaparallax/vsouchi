@@ -18,24 +18,26 @@ import android.os.IBinder;
 
 public class ActivityLauncher {
     private static final String TAG = "vSouchi:Launcher";
-    private static boolean ipcReadySent = false;
+    private static long lastWakeTimestamp = 0;
     private static final Context ctx = createContext();
 
-    public static void wakeApp(IBinder binder, Handler handler) {
-        if (!ipcReadySent) {
-            Logger.i(TAG, "Firing Intent to wake Android App...");
-            Intent intent = createIntent(binder);
-            try {
-                if (ctx != null) ctx.startActivity(intent);
-                else throw new RuntimeException("Null context");
-            } catch (Exception e) {
-                Logger.e(TAG, "Standard Launch Failed. Trying Reflection fallback...", e);
-                startActivityManual(intent);
-            }
-            ipcReadySent = true;
+    public static synchronized void wakeApp(IBinder binder) {
+        long now = System.currentTimeMillis();
+        if (now - lastWakeTimestamp < 1000) {
+            Logger.i(TAG, "Wake Intent throttled (already sent <1s ago).");
             return;
         }
-        handler.postDelayed(() -> wakeApp(binder, handler), 200);
+        lastWakeTimestamp = now;
+
+        Logger.i(TAG, "Firing Intent to wake Android App...");
+        Intent intent = createIntent(binder);
+        try {
+            if (ctx != null) ctx.startActivity(intent);
+            else throw new RuntimeException("Null context");
+        } catch (Exception e) {
+            Logger.e(TAG, "Standard Launch Failed. Trying Reflection fallback...", e);
+            startActivityManual(intent);
+        }
     }
 
     private static Intent createIntent(IBinder binder) {
@@ -48,9 +50,10 @@ public class ActivityLauncher {
         Intent i = new Intent();
         i.setClassName(targetPkg, targetActivity);
         i.putExtra("ipc_bundle", b);
-        i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
         return i;
     }
+
 
     private static void startActivityManual(Intent intent) {
         try {

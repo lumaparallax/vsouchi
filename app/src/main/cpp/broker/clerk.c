@@ -6,6 +6,7 @@
 // Generic routing loop for shim clients. Forwards commands to Bridge and returns replies.
 #include <stdio.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/uio.h>
 #include <sys/socket.h>
 #include "broker/internal.h"
@@ -13,6 +14,37 @@
 void* clerk_thread_func(void* arg) {
     ClientContext *ctx = (ClientContext*)arg;
     int client_fd = ctx->client_fd;
+
+    IpcHandshakePacket hs;
+    size_t total_hs = 0;
+    char *hs_buf = (char*)&hs;
+    while (total_hs < sizeof(IpcHandshakePacket)) {
+        int r = read(client_fd, hs_buf + total_hs, sizeof(IpcHandshakePacket) - total_hs);
+        if (r <= 0) {
+            printf("[Broker] Handshake read failed from client FD %d.\n", client_fd);
+            goto cleanup;
+        }
+        total_hs += (size_t)r;
+    }
+
+    if (hs.magic != VSOUCHI_IPC_MAGIC) {
+        printf("[Broker] Invalid magic 0x%08X from client FD %d (expected 0x%08X).\n",
+               hs.magic, client_fd, VSOUCHI_IPC_MAGIC);
+        goto cleanup;
+    }
+
+    if (hs.version != VSOUCHI_PROTOCOL_VER) {
+        printf("[Broker] Protocol version mismatch on FD %d (client v%u != broker v%u).\n",
+               client_fd, hs.version, (uint32_t)VSOUCHI_PROTOCOL_VER);
+        int32_t proto_err = -EPROTO;
+        write(client_fd, &proto_err, sizeof(int32_t));
+        goto cleanup;
+    }
+
+    int32_t ack = 0;
+    if (write(client_fd, &ack, sizeof(int32_t)) <= 0) {
+        goto cleanup;
+    }
 
     while (1) {
         char buf[MAX_PAYLOAD];
@@ -61,14 +93,27 @@ void* clerk_thread_func(void* arg) {
 
             // 1. Subsystem Monitor Hook (Validates hardware/stream locks)
             if (subsystem_validate_command(client_fd, cmd) < 0) {
-                int32_t ebusy = -16; // -EBUSY
+                int32_t ebusy = -16;
                 write(client_fd, &ebusy, sizeof(int32_t));
                 continue; 
+            }
+
+            // Ensure Android APK bridge is alive (triggers on-demand wake if dead)
+            if (broker_ensure_bridge() < 0) {
+                int32_t enodev = -19;
+                write(client_fd, &enodev, sizeof(int32_t));
+                continue;
             }
 
             // 2. Forward securely to Bridge
             IpcOutboundHeader hdr = { .client_fd = client_fd, .cmd = cmd };
             pthread_mutex_lock(&g_bridge_tx_mutex);
+            if (g_bridge_fd < 0) {
+                pthread_mutex_unlock(&g_bridge_tx_mutex);
+                int32_t enodev = -19;
+                write(client_fd, &enodev, sizeof(int32_t));
+                continue;
+            }
             struct iovec iov[2];
             iov[0].iov_base = &hdr; iov[0].iov_len = sizeof(hdr);
             iov[1].iov_base = buf + sizeof(uint32_t); iov[1].iov_len = n - sizeof(uint32_t);
@@ -81,7 +126,12 @@ void* clerk_thread_func(void* arg) {
                 pthread_cond_wait(&ctx->cond, &ctx->lock);
             }
             
-            if (ctx->fatal_error) { pthread_mutex_unlock(&ctx->lock); break; }
+            if (ctx->fatal_error) {
+                pthread_mutex_unlock(&ctx->lock);
+                int32_t enodev = -19;
+                write(client_fd, &enodev, sizeof(int32_t));
+                break;
+            }
 
             // 4. Reply to Shim
             struct iovec riov[2];
@@ -92,6 +142,16 @@ void* clerk_thread_func(void* arg) {
             ctx->response_ready = 0;
             pthread_mutex_unlock(&ctx->lock);
         }
+
     }
+cleanup:
+     // Ensure socket cleanup runs on both client EOF and bridge fatal error
+    printf("[Broker] Shim (FD %d) cleaned up.\n", client_fd);
+    subsystem_handle_disconnect(client_fd);
+
+    pthread_mutex_lock(&g_clients_mutex);
+    ctx->active = 0;
+    close(client_fd);
+    pthread_mutex_unlock(&g_clients_mutex);
     return NULL;
 }

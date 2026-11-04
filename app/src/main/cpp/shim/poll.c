@@ -23,6 +23,7 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
             
             if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
                 has_camera = 1;
+                fds[i].revents = 0;
                 int ready = 0;
                 
                 if (shim_ipc_transaction(CMD_POLL, NULL, 0, &ready, sizeof(int)) == 0) {

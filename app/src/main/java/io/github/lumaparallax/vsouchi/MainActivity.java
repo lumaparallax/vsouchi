@@ -81,12 +81,19 @@ public class MainActivity extends Activity implements PermissionsHelper.Permissi
                 Logger.e(TAG, "Failed to start ForegroundService", e);
             }
         }
-        finish(); 
+        moveTaskToBack(true);
     }
 
     @Override
     public void onPermissionsDenied() {
         Toast.makeText(this, "Camera and Notification permissions are required!", Toast.LENGTH_LONG).show();
         finish(); 
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIntent();
     }
 }

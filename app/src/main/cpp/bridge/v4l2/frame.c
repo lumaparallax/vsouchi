@@ -16,6 +16,7 @@
 #include <android/hardware_buffer.h>
 #include <android/native_window_jni.h>
 #include "bridge/v4l2/v4l2.h"
+#include "bridge/v4l2/internal.h"
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "vSouchi:BridgeFrame", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "vSouchi:BridgeFrame", __VA_ARGS__)
@@ -96,28 +97,32 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
         int target_h = v4l2_get_height();
         uint32_t fmt = v4l2_get_current_format();
 
+        int is_rotated = is_rotated_90_270();
+        int eff_hflip = g_sensor_hflip ^ (g_current_rotate == 180);
+        int eff_vflip = g_sensor_vflip ^ (g_current_rotate == 180);
+
         int is_nv12 = (fmt == v4l2_fourcc('N', 'V', '1', '2'));
         int is_nv21 = (fmt == v4l2_fourcc('N', 'V', '2', '1'));
 
-        /* Check if hardware plane layout natively matches requested semi-planar NV12/NV21 */
-        int match_nv12 = (is_nv12 && uv_pixel_stride == 2 && u_data == v_data - 1);
-        int match_nv21 = (is_nv21 && uv_pixel_stride == 2 && v_data == u_data - 1);
+        /* Check if hardware plane layout natively matches requested semi-planar NV12/NV21 (not applicable if dimensions are transposed) */
+        int match_nv12 = (!is_rotated && is_nv12 && uv_pixel_stride == 2 && u_data == v_data - 1);
+        int match_nv21 = (!is_rotated && is_nv21 && uv_pixel_stride == 2 && v_data == u_data - 1);
 
         if (match_nv12 || match_nv21) {
             uint32_t total_sz = (width * height * 3) / 2;
 
-            if (!g_sensor_hflip && !g_sensor_vflip && y_stride == width && uv_stride == width) {
-                /* Zero-copy linear match directly from GPU buffer */
+            if (!eff_hflip && !eff_vflip && y_stride == width && uv_stride == width) {
+                /* Fast-path: Direct linear copy without pixel-format conversion */
                 memcpy(payload, y_data, total_sz);
             } else {
                 /* Single-pass row unpadding with combined HFLIP / VFLIP */
                 uint8_t* dst_y = payload;
                 for (int r = 0; r < height; r++) {
-                    int dst_r = g_sensor_vflip ? (height - 1 - r) : r;
+                    int dst_r = eff_vflip ? (height - 1 - r) : r;
                     uint8_t* dst_line = dst_y + (dst_r * width);
                     const uint8_t* src_line = y_data + (r * y_stride);
 
-                    if (g_sensor_hflip) {
+                    if (eff_hflip) {
                         mirror_row_8(src_line, dst_line, width);
                     } else {
                         memcpy(dst_line, src_line, width);
@@ -127,11 +132,11 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
                 uint8_t* dst_uv = payload + (width * height);
                 const uint8_t* src_uv = match_nv12 ? u_data : v_data;
                 for (int r = 0; r < height / 2; r++) {
-                    int dst_r = g_sensor_vflip ? (height / 2 - 1 - r) : r;
+                    int dst_r = eff_vflip ? (height / 2 - 1 - r) : r;
                     uint8_t* dst_line = dst_uv + (dst_r * width);
                     const uint8_t* src_line = src_uv + (r * uv_stride);
 
-                    if (g_sensor_hflip) {
+                    if (eff_hflip) {
                         mirror_row_16((const uint16_t*)src_line,
                                       (uint16_t*)dst_line,
                                       width / 2);
@@ -143,7 +148,13 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
             v4l2_set_buffer_bytesused(index, total_sz);
         } else {
             uint32_t base_size = (width * height * 3) / 2;
-            uint32_t req_size = (g_sensor_hflip || g_sensor_vflip) ? (base_size * 2) : base_size;
+            uint32_t num_buffers = 1;
+            if (is_rotated) {
+                num_buffers = (g_sensor_hflip || g_sensor_vflip) ? 3 : 2;
+            } else if (eff_hflip || eff_vflip) {
+                num_buffers = 2;
+            }
+            uint32_t req_size = base_size * num_buffers;
 
             if (g_temp_i420_size < req_size) {
                 if (g_temp_i420_buffer) free(g_temp_i420_buffer);
@@ -168,31 +179,79 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
 
             uint8_t *src_y = temp_y, *src_u = temp_u, *src_v = temp_v;
 
-            if (g_sensor_hflip || g_sensor_vflip) {
+            if (is_rotated) {
+                uint8_t* rot_y = g_temp_i420_buffer + base_size;
+                uint8_t* rot_u = rot_y + (target_w * target_h);
+                uint8_t* rot_v = rot_u + ((target_w * target_h) / 4);
+
+                enum RotationMode rot_mode = (g_current_rotate == 90) ? kRotate90 : kRotate270;
+                I420Rotate(temp_y, width,
+                           temp_u, width / 2,
+                           temp_v, width / 2,
+                           rot_y, target_w,
+                           rot_u, target_w / 2,
+                           rot_v, target_w / 2,
+                           width, height,
+                           rot_mode);
+
+                src_y = rot_y;
+                src_u = rot_u;
+                src_v = rot_v;
+
+                if (g_sensor_hflip || g_sensor_vflip) {
+                    uint8_t* flip_y = g_temp_i420_buffer + (base_size * 2);
+                    uint8_t* flip_u = flip_y + (target_w * target_h);
+                    uint8_t* flip_v = flip_u + ((target_w * target_h) / 4);
+
+                    int copy_height = g_sensor_vflip ? -target_h : target_h;
+
+                    if (g_sensor_hflip) {
+                        I420Mirror(rot_y, target_w,
+                                   rot_u, target_w / 2,
+                                   rot_v, target_w / 2,
+                                   flip_y, target_w,
+                                   flip_u, target_w / 2,
+                                   flip_v, target_w / 2,
+                                   target_w, copy_height);
+                    } else {
+                        I420Copy(rot_y, target_w,
+                                 rot_u, target_w / 2,
+                                 rot_v, target_w / 2,
+                                 flip_y, target_w,
+                                 flip_u, target_w / 2,
+                                 flip_v, target_w / 2,
+                                 target_w, copy_height);
+                    }
+
+                    src_y = flip_y;
+                    src_u = flip_u;
+                    src_v = flip_v;
+                }
+            } else if (eff_hflip || eff_vflip) {
                 uint8_t* flip_y = g_temp_i420_buffer + base_size;
-                uint8_t* flip_u = flip_y + (width * height);
-                uint8_t* flip_v = flip_u + ((width * height) / 4);
+                uint8_t* flip_u = flip_y + (target_w * target_h);
+                uint8_t* flip_v = flip_u + ((target_w * target_h) / 4);
 
-                int copy_height = g_sensor_vflip ? -height : height;
+                int copy_height = eff_vflip ? -target_h : target_h;
 
-                if (g_sensor_hflip) {
+                if (eff_hflip) {
                     /* I420Mirror accepts a negative height for simultaneous VFLIP */
-                    I420Mirror(temp_y, width,
-                               temp_u, width / 2,
-                               temp_v, width / 2,
-                               flip_y, width,
-                               flip_u, width / 2,
-                               flip_v, width / 2,
-                               width, copy_height);
+                    I420Mirror(temp_y, target_w,
+                               temp_u, target_w / 2,
+                               temp_v, target_w / 2,
+                               flip_y, target_w,
+                               flip_u, target_w / 2,
+                               flip_v, target_w / 2,
+                               target_w, copy_height);
                 } else {
                     /* VFLIP only: I420Copy with negative height inverts the image */
-                    I420Copy(temp_y, width,
-                             temp_u, width / 2,
-                             temp_v, width / 2,
-                             flip_y, width,
-                             flip_u, width / 2,
-                             flip_v, width / 2,
-                             width, copy_height);
+                    I420Copy(temp_y, target_w,
+                             temp_u, target_w / 2,
+                             temp_v, target_w / 2,
+                             flip_y, target_w,
+                             flip_u, target_w / 2,
+                             flip_v, target_w / 2,
+                             target_w, copy_height);
                 }
 
                 src_y = flip_y;
@@ -201,18 +260,18 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
             }
 
             if (fmt == v4l2_fourcc('Y', 'U', 'Y', 'V')) {
-                I420ToYUY2(src_y, width, src_u, width / 2, src_v, width / 2,
+                I420ToYUY2(src_y, target_w, src_u, target_w / 2, src_v, target_w / 2,
                            payload, target_w * 2, target_w, target_h);
                 v4l2_set_buffer_bytesused(index, target_w * target_h * 2);
             }
             else if (fmt == v4l2_fourcc('N', 'V', '1', '2')) {
-                I420ToNV12(src_y, width, src_u, width / 2, src_v, width / 2,
+                I420ToNV12(src_y, target_w, src_u, target_w / 2, src_v, target_w / 2,
                            payload, target_w, payload + (target_w * target_h), target_w,
                            target_w, target_h);
                 v4l2_set_buffer_bytesused(index, (target_w * target_h * 3) / 2);
             }
             else if (fmt == v4l2_fourcc('N', 'V', '2', '1')) {
-                I420ToNV21(src_y, width, src_u, width / 2, src_v, width / 2,
+                I420ToNV21(src_y, target_w, src_u, target_w / 2, src_v, target_w / 2,
                            payload, target_w, payload + (target_w * target_h), target_w,
                            target_w, target_h);
                 v4l2_set_buffer_bytesused(index, (target_w * target_h * 3) / 2);
@@ -226,7 +285,7 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
                     uint8_t* swap = out_u; out_u = out_v; out_v = swap;
                 }
 
-                I420Copy(src_y, width, src_u, width / 2, src_v, width / 2,
+                I420Copy(src_y, target_w, src_u, target_w / 2, src_v, target_w / 2,
                          out_y, target_w, out_u, target_w / 2, out_v, target_w / 2,
                          target_w, target_h);
                 v4l2_set_buffer_bytesused(index, (target_w * target_h * 3) / 2);
@@ -275,5 +334,10 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
     if (g_ndk_reader != NULL) {
         AImageReader_delete(g_ndk_reader);
         g_ndk_reader = NULL;
+    }
+    if (g_temp_i420_buffer != NULL) {
+        free(g_temp_i420_buffer);
+        g_temp_i420_buffer = NULL;
+        g_temp_i420_size = 0;
     }
 }

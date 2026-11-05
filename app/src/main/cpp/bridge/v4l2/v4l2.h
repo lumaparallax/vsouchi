@@ -26,6 +26,8 @@ void v4l2_cleanup();
 
 int v4l2_get_width();
 int v4l2_get_height();
+int v4l2_get_sensor_width();
+int v4l2_get_sensor_height();
 int v4l2_get_fps();
 
 void v4l2_init_formats(int* android_formats, int count);

@@ -130,18 +130,22 @@ static void v4l2_negotiate_format(uint32_t req_w, uint32_t req_h, uint32_t req_f
         return;
     }
 
+    /* Map requested client dimensions into sensor orientation space for matching */
+    uint32_t target_sensor_w = is_rotated_90_270() ? req_h : req_w;
+    uint32_t target_sensor_h = is_rotated_90_270() ? req_w : req_h;
+
     int chosen_idx = -1;
     uint32_t min_diff = UINT32_MAX;
 
     for (int i = 0; i < g_res_count; ++i) {
         if (g_resolutions[i].android_format == chosen_android_fmt) {
-            if (g_resolutions[i].width == req_w && g_resolutions[i].height == req_h) {
+            if (g_resolutions[i].width == target_sensor_w && g_resolutions[i].height == target_sensor_h) {
                 chosen_idx = i;
                 break;
             }
 
-            int dw = (int)g_resolutions[i].width - (int)req_w;
-            int dh = (int)g_resolutions[i].height - (int)req_h;
+            int dw = (int)g_resolutions[i].width - (int)target_sensor_w;
+            int dh = (int)g_resolutions[i].height - (int)target_sensor_h;
             uint32_t diff = (uint32_t)(abs(dw) + abs(dh));
 
             if (diff < min_diff) {
@@ -155,8 +159,14 @@ static void v4l2_negotiate_format(uint32_t req_w, uint32_t req_h, uint32_t req_f
         chosen_idx = 0;
     }
 
-    *out_w = g_resolutions[chosen_idx].width;
-    *out_h = g_resolutions[chosen_idx].height;
+    /* Transpose sensor dimensions back to client representation if rotated */
+    if (is_rotated_90_270()) {
+        *out_w = g_resolutions[chosen_idx].height;
+        *out_h = g_resolutions[chosen_idx].width;
+    } else {
+        *out_w = g_resolutions[chosen_idx].width;
+        *out_h = g_resolutions[chosen_idx].height;
+    }
     *out_fmt = chosen_fmt;
     *out_android_fmt = chosen_android_fmt;
 }
@@ -263,8 +273,13 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         }
 
         if (found_idx != -1) {
-            req.width = g_resolutions[found_idx].width;
-            req.height = g_resolutions[found_idx].height;
+            if (is_rotated_90_270()) {
+                req.width = g_resolutions[found_idx].height;
+                req.height = g_resolutions[found_idx].width;
+            } else {
+                req.width = g_resolutions[found_idx].width;
+                req.height = g_resolutions[found_idx].height;
+            }
         } else {
             req.pixel_format = 0xFFFFFFFF;
             req.width = 0;
@@ -287,10 +302,13 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
             }
         }
 
+        uint32_t match_w = is_rotated_90_270() ? req.height : req.width;
+        uint32_t match_h = is_rotated_90_270() ? req.width : req.height;
+
         for (int i = 0; i < g_res_count; i++) {
             if (g_resolutions[i].android_format == target_android_fmt &&
-                g_resolutions[i].width == req.width &&
-                g_resolutions[i].height == req.height) {
+                g_resolutions[i].width == match_w &&
+                g_resolutions[i].height == match_h) {
 
                 if (req.index < g_resolutions[i].fps_count) {
                     req.fps_numerator = 1;
@@ -393,8 +411,8 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
             qc.id = target_id;
             qc.type = V4L2_CTRL_TYPE_INTEGER;
             strcpy((char*)qc.name, "Rotate");
-            qc.minimum = 0; qc.maximum = 270; qc.step = 90; qc.default_value = g_sensor_orientation;
-            qc.flags = V4L2_CTRL_FLAG_READ_ONLY;
+            qc.minimum = 0; qc.maximum = 270; qc.step = 90; qc.default_value = 0;
+            qc.flags = 0;
         }
         else if (target_id == V4L2_CID_CAMERA_CLASS) {
             qc.id = target_id;
@@ -441,7 +459,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         else if (ctrl_id == V4L2_CID_FOCUS_ABSOLUTE) resp.value = g_current_focus_abs;
         else if (ctrl_id == V4L2_CID_EXPOSURE_AUTO) resp.value = g_current_exposure_auto;
         else if (ctrl_id == V4L2_CID_EXPOSURE_ABSOLUTE) resp.value = g_current_exposure_abs ? g_current_exposure_abs : 156;
-        else if (ctrl_id == V4L2_CID_ROTATE) resp.value = g_sensor_orientation;
+        else if (ctrl_id == V4L2_CID_ROTATE) resp.value = g_current_rotate;
         else if (ctrl_id == V4L2_CID_HFLIP) resp.value = g_sensor_hflip;
         else if (ctrl_id == V4L2_CID_VFLIP) resp.value = g_sensor_vflip;
         else valid = 0;
@@ -458,15 +476,32 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         IpcControlPayload payload;
         if (read_exact(socket_fd, &payload, sizeof(payload)) != 0) return -1;
 
-        if (payload.id == V4L2_CID_ROTATE) {
-            v4l2_send_error(socket_fd, client_fd, EACCES);
-            return 0;
-        }
-
         int valid_id = 0;
         int in_range = 0;
 
-        if (payload.id == V4L2_CID_HFLIP) {
+        if (payload.id == V4L2_CID_ROTATE) {
+            if (g_is_streaming) {
+                v4l2_send_error(socket_fd, client_fd, EBUSY);
+                return 0;
+            }
+            valid_id = 1;
+            if (payload.value >= 0 && payload.value <= 270) {
+                int rounded = ((payload.value + 45) / 90) * 90;
+                if (rounded > 270) rounded = 270;
+
+                int was_orthogonal = (g_current_rotate == 90 || g_current_rotate == 270);
+                int now_orthogonal = (rounded == 90 || rounded == 270);
+                if (was_orthogonal != now_orthogonal) {
+                    uint32_t tmp = g_current_width;
+                    g_current_width = g_current_height;
+                    g_current_height = tmp;
+                }
+                g_current_rotate = rounded;
+                payload.value = rounded;
+                in_range = 1;
+            }
+        }
+        else if (payload.id == V4L2_CID_HFLIP) {
             valid_id = 1;
             if (payload.value >= 0 && payload.value <= 1) {
                 g_sensor_hflip = payload.value;
@@ -522,7 +557,7 @@ int v4l2_handle_command(int socket_fd, uint32_t client_fd, uint32_t cmd, const c
         g_last_ctrl_id = payload.id;
         g_last_ctrl_val = payload.value;
 
-        int32_t ack = 0;
+        int32_t ack = payload.value;
         v4l2_send_reply(socket_fd, client_fd, 0, &ack, sizeof(ack));
         return 4;
 

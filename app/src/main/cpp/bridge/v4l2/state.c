@@ -68,6 +68,7 @@ uint32_t g_current_height = 1080;
 uint32_t g_current_fps = 30;
 uint32_t g_current_format = v4l2_fourcc('N', 'V', '1', '2');
 int g_current_android_format = 35;
+int g_current_rotate = 0;
 
 int g_buffer_fds[MAX_BUFFERS] = {-1, -1, -1, -1, -1, -1, -1, -1};
 uint32_t g_buffer_lengths[MAX_BUFFERS] = {0};
@@ -125,10 +126,12 @@ uint32_t v4l2_get_current_frame_size() {
 }
 
 uint32_t get_max_fps_for_res(uint32_t w, uint32_t h) {
+    uint32_t sw = is_rotated_90_270() ? h : w;
+    uint32_t sh = is_rotated_90_270() ? w : h;
     for (int i = 0; i < g_res_count; i++) {
         if (g_resolutions[i].android_format == g_current_android_format &&
-            g_resolutions[i].width == w &&
-            g_resolutions[i].height == h) {
+            g_resolutions[i].width == sw &&
+            g_resolutions[i].height == sh) {
             return g_resolutions[i].max_fps;
         }
     }
@@ -169,6 +172,7 @@ int v4l2_switch_camera(int index) {
     g_sensor_orientation = cam->orientation;
     g_sensor_hflip = cam->hflip;
     g_sensor_vflip = 0;
+    g_current_rotate = 0;
 
     /* Re-negotiate default resolution for the selected sensor */
     if (g_supported_format_count > 0) {
@@ -322,6 +326,8 @@ void v4l2_add_camera(int index, const char* name, const char* id,
 int v4l2_get_android_format() { return g_current_android_format; }
 int v4l2_get_width() { return g_current_width; }
 int v4l2_get_height() { return g_current_height; }
+int v4l2_get_sensor_width() { return is_rotated_90_270() ? g_current_height : g_current_width; }
+int v4l2_get_sensor_height() { return is_rotated_90_270() ? g_current_width : g_current_height; }
 uint32_t v4l2_get_current_format() { return g_current_format; }
 int v4l2_get_fps() { return g_current_fps; }
 

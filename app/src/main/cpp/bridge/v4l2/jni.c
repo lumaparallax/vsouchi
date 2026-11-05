@@ -149,7 +149,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_v4l2_NativeBridge_nat
 
         if (signal == 1) {
             (*env)->CallVoidMethod(env, thiz, method_onStreamOn,
-                                   v4l2_get_width(), v4l2_get_height(),
+                                   v4l2_get_sensor_width(), v4l2_get_sensor_height(),
                                    v4l2_get_fps(), v4l2_get_android_format());
         } else if (signal == 2) {
             (*env)->CallVoidMethod(env, thiz, method_onStreamOff);

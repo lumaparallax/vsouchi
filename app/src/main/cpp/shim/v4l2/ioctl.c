@@ -880,7 +880,7 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
             }
 
             /* Reject writing read-only controls */
-            if (req_id == V4L2_CID_ROTATE || req_id == V4L2_CID_USER_CLASS || req_id == V4L2_CID_CAMERA_CLASS) {
+            if (req_id == V4L2_CID_USER_CLASS || req_id == V4L2_CID_CAMERA_CLASS) {
                if (req_clean == (uint32_t)VIDIOC_S_EXT_CTRLS) {
                     ext->error_idx = ext->count;
                     errno = EACCES;

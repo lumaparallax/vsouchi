@@ -68,6 +68,7 @@ extern uint32_t g_current_height;
 extern uint32_t g_current_fps;
 extern uint32_t g_current_format;
 extern int g_current_android_format;
+extern int g_current_rotate;
 
 extern int g_buffer_fds[MAX_BUFFERS];
 extern uint32_t g_buffer_lengths[MAX_BUFFERS];
@@ -92,6 +93,10 @@ void v4l2_send_reply(int socket_fd, uint32_t client_fd, int32_t status, void* pa
 void v4l2_send_error(int socket_fd, uint32_t client_fd, int32_t error_code);
 void v4l2_free_buffers();
 void v4l2_queue_dqbuf_request(int socket_fd, uint32_t client_fd, IpcV4l2Buffer* buf);
+
+static inline int is_rotated_90_270(void) {
+    return (g_current_rotate == 90 || g_current_rotate == 270);
+}
 
 static inline int read_exact(int fd, void *buf, size_t count) {
     size_t total = 0;

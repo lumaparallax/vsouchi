@@ -36,15 +36,14 @@ public class ForegroundService extends Service {
                 "vSouchi IPC Service",
                 NotificationManager.IMPORTANCE_LOW
         );
-        channel.setDescription("Maintains background V4L2 device streaming and IPC routing");
 
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.createNotificationChannel(channel);
 
         int badgeColor = ContextCompat.getColor(this, R.color.notification_background);
         Notification notification = new Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("vSouchi Active")
-                .setContentText("V4L2 virtualization pipeline running")
+                .setContentTitle("vSouchi")
+                .setContentText("Rootless Virtual V4L2 Node")
                 .setSmallIcon(R.drawable.ic_notification)
                 .setColor(badgeColor)
                 .setOngoing(true)

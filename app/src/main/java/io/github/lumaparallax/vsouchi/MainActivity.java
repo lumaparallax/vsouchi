@@ -11,7 +11,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
-import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.IOException;
@@ -45,9 +44,9 @@ public class MainActivity extends Activity implements PermissionsHelper.Permissi
 
             if (b != null) {
                 IBinder binder = b.getBinder("ipc_binder");
-                if (binder instanceof NativeBridge.BridgeBinder) {
-                    NativeBridge.BridgeBinder bridgeBinder = (NativeBridge.BridgeBinder) binder;
+                if (binder != null) {
                     try {
+                        IBridgeBinder bridgeBinder = IBridgeBinder.Stub.asInterface(binder);
                         ParcelFileDescriptor pfd = bridgeBinder.socketPairFD();
 
                         if (pfd != null) {
@@ -64,7 +63,7 @@ public class MainActivity extends Activity implements PermissionsHelper.Permissi
                             pendingServiceIntent = new Intent(this, ForegroundService.class);
                             pendingServiceIntent.putExtra("socket_fd", apkSocketFd);
 
-                            PermissionsHelper.checkAndRequestPermissions(this, this);
+                            PermissionsHelper.checkAndRequest(this, this);
                             return;
                         }
                     } catch (Exception e) {
@@ -76,10 +75,13 @@ public class MainActivity extends Activity implements PermissionsHelper.Permissi
             finishAndRemoveTask();
         } else {
             isDaemonLaunch = false;
-            TextView tv = new TextView(this);
-            tv.setText("vSouchi IPC Framework\nLaunch via shell environment.");
-            setContentView(tv);
+            setContentView(R.layout.activity_main);
         }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        PermissionsHelper.handleResult(requestCode, grantResults, this);
     }
 
     @Override

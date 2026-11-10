@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#1A1B26</color>
+    <color name="notification_background">#C0CAF5</color>
+
+    <color name="ui_bg">#121212</color>
+    <color name="ui_card">#1E1E1E</color>
+    <color name="ui_text_primary">#FFFFFF</color>
+    <color name="ui_text_secondary">#B0B0B0</color>
+    <color name="ui_accent">#81A1C1</color>
+</resources>

@@ -76,9 +76,11 @@ public class ActivityLauncher {
             Class<?> receiverClass = Class.forName("android.content.IIntentReceiver");
             java.lang.reflect.Method getSender = am.getClass().getMethod("getIntentSender",
                     int.class, String.class, IBinder.class, String.class, int.class, Intent[].class, String[].class, int.class, Bundle.class, int.class);
+            int flags = PendingIntent.FLAG_CANCEL_CURRENT | PendingIntent.FLAG_ONE_SHOT | 0x04000000;
+
             Object sender = getSender.invoke(am,
                     INTENT_SENDER_ACTIVITY, packageName, null, null, 0, new Intent[] { intent }, null,
-                    PendingIntent.FLAG_CANCEL_CURRENT | PendingIntent.FLAG_ONE_SHOT, null, 0);
+                    flags, null, 0);
             java.lang.reflect.Method send = sender.getClass().getMethod("send",
                     int.class, Intent.class, String.class, IBinder.class, receiverClass, String.class, Bundle.class);
             send.invoke(sender, 0, intent, null, null, null, null, null);

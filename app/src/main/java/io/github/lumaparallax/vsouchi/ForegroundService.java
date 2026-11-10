@@ -22,6 +22,7 @@ public class ForegroundService extends Service {
     private static final String TAG = "vSouchi:Service";
     private static final String CHANNEL_ID = "vsouchi_ipc_channel";
     private static final int NOTIFICATION_ID = 4040;
+
     private NativeBridge nativeBridge;
     private CameraEngine cameraEngine;
     private CameraHardwareManager hardwareManager;
@@ -41,7 +42,6 @@ public class ForegroundService extends Service {
         if (manager != null) manager.createNotificationChannel(channel);
 
         int badgeColor = ContextCompat.getColor(this, R.color.notification_background);
-
         Notification notification = new Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("vSouchi Active")
                 .setContentText("V4L2 virtualization pipeline running")
@@ -84,13 +84,17 @@ public class ForegroundService extends Service {
                     new Thread(() -> {
                         nativeBridge.nativeStartLoop(socketFd);
 
-                        Logger.i(TAG, "IPC Loop exited. Shutting down physical camera lens and service.");
+                        Logger.i(TAG, "Daemon disconnected socket. Stopping service.");
 
                         if (cameraEngine != null) {
                             cameraEngine.destroy();
                         }
 
-                        stopForeground(Service.STOP_FOREGROUND_REMOVE);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                            stopForeground(Service.STOP_FOREGROUND_REMOVE);
+                        } else {
+                            stopForeground(true);
+                        }
                         stopSelf();
 
                     }, "NativeBridgeLoop").start();

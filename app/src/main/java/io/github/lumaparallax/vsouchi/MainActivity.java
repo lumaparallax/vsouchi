@@ -14,9 +14,14 @@ import android.os.ParcelFileDescriptor;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.IOException;
+
 public class MainActivity extends Activity implements PermissionsHelper.PermissionCallback {
     private static final String TAG = "vSouchi:Main";
+
     private Intent pendingServiceIntent;
+    private int apkSocketFd = -1;
+    private boolean isDaemonLaunch = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -24,37 +29,53 @@ public class MainActivity extends Activity implements PermissionsHelper.Permissi
         handleIntent();
     }
 
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIntent();
+    }
+
     private void handleIntent() {
-        if (getIntent() != null && getIntent().hasExtra("ipc_bundle")) {
+        Intent intent = getIntent();
+        if (intent != null && intent.hasExtra("ipc_bundle")) {
+            isDaemonLaunch = true;
             Logger.i(TAG, "Routing Intent from shell environment to ForegroundService...");
-            Bundle b = getIntent().getBundleExtra("ipc_bundle");
+            Bundle b = intent.getBundleExtra("ipc_bundle");
 
             if (b != null) {
                 IBinder binder = b.getBinder("ipc_binder");
-                if (binder != null) {
+                if (binder instanceof NativeBridge.BridgeBinder) {
+                    NativeBridge.BridgeBinder bridgeBinder = (NativeBridge.BridgeBinder) binder;
                     try {
-                        IBridgeBinder bridgeBinder = IBridgeBinder.Stub.asInterface(binder);
                         ParcelFileDescriptor pfd = bridgeBinder.socketPairFD();
 
                         if (pfd != null) {
-                            // Detach FD immediately so it survives Activity destruction and garbage collection.
-                            int apkSocketFd = pfd.detachFd();
+                            apkSocketFd = pfd.detachFd();
+
+                            if (apkSocketFd < 0) {
+                                Logger.e(TAG, "Failed to detach valid socket descriptor");
+                                finishAndRemoveTask();
+                                return;
+                            }
+
                             Logger.i(TAG, "Extracted Socket FD: " + apkSocketFd + ". Checking permissions...");
 
                             pendingServiceIntent = new Intent(this, ForegroundService.class);
                             pendingServiceIntent.putExtra("socket_fd", apkSocketFd);
 
-                            PermissionsHelper.checkAndRequest(this, this);
+                            PermissionsHelper.checkAndRequestPermissions(this, this);
                             return;
                         }
                     } catch (Exception e) {
                         Logger.e(TAG, "Binder transaction failed", e);
+                        closeSocketFd();
                     }
                 }
             }
-            finish();
-
+            finishAndRemoveTask();
         } else {
+            isDaemonLaunch = false;
             TextView tv = new TextView(this);
             tv.setText("vSouchi IPC Framework\nLaunch via shell environment.");
             setContentView(tv);
@@ -62,38 +83,42 @@ public class MainActivity extends Activity implements PermissionsHelper.Permissi
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        PermissionsHelper.handleResult(requestCode, grantResults, this);
-    }
-
-    @Override
     public void onPermissionsGranted() {
-        if (pendingServiceIntent != null) {
-            try {
-                // startForegroundService grants a legal 5-second grace period for the background service
-                // to post its notification even after this Activity calls finish() and dies.
-                if (Build.VERSION.SDK_INT >= 26) {
-                    startForegroundService(pendingServiceIntent);
-                } else {
-                    startService(pendingServiceIntent);
+        if (isDaemonLaunch) {
+            if (pendingServiceIntent != null) {
+                try {
+                    if (Build.VERSION.SDK_INT >= 26) {
+                        startForegroundService(pendingServiceIntent);
+                    } else {
+                        startService(pendingServiceIntent);
+                    }
+                } catch (Exception e) {
+                    Logger.e(TAG, "Failed to start ForegroundService", e);
+                    closeSocketFd();
                 }
-            } catch (Exception e) {
-                Logger.e(TAG, "Failed to start ForegroundService", e);
             }
+            finishAndRemoveTask();
         }
-        moveTaskToBack(true);
     }
 
     @Override
     public void onPermissionsDenied() {
-        Toast.makeText(this, "Camera and Notification permissions are required!", Toast.LENGTH_LONG).show();
-        finish();
+        if (isDaemonLaunch) {
+            closeSocketFd();
+            Toast.makeText(this, "Camera and Notification permissions are required!", Toast.LENGTH_LONG).show();
+            finishAndRemoveTask();
+        }
     }
 
-    @Override
-    protected void onNewIntent(Intent intent) {
-        super.onNewIntent(intent);
-        setIntent(intent);
-        handleIntent();
+    private void closeSocketFd() {
+        if (apkSocketFd >= 0) {
+            try {
+                ParcelFileDescriptor.adoptFd(apkSocketFd).close();
+            } catch (IOException e) {
+                Logger.e(TAG, "Failed to close socket FD", e);
+            } finally {
+                apkSocketFd = -1;
+            }
+        }
     }
 }

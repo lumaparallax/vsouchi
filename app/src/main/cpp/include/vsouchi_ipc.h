@@ -14,6 +14,7 @@
 
 #define VSOUCHI_IPC_MAGIC    0x76654476 // "vDev"
 #define VSOUCHI_PROTOCOL_VER 1
+#define VSOUCHI_PATH_MAX 1024
 #define CMD_GET_CAPS   0x10
 #define CMD_ENUM_FMT   0x11
 #define CMD_G_FMT      0x12
@@ -149,7 +150,7 @@ typedef struct {
 } IpcV4l2Buffer;
 
 static inline const char* vsouchi_get_vdev_path(void) {
-    static _Thread_local char path[512];
+    static _Thread_local char path[VSOUCHI_PATH_MAX];
 
     const char* env = getenv("VDEV_PATH");
     if (env && env[0] != '\0') {

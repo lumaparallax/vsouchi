@@ -185,7 +185,7 @@ static void daemon_signal_handler(int sig) {
         g_server_fd = -1;
     }
 
-    char path[512];
+    char path[VSOUCHI_PATH_MAX];
     snprintf(path, sizeof(path), "%s/video0", base_dir);
     unlink(path);
 
@@ -234,7 +234,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
     const char* base_dir = vsouchi_get_vdev_path();
     mkdir(base_dir, 0777);
 
-    char lock_path[512];
+    char lock_path[VSOUCHI_PATH_MAX];
     snprintf(lock_path, sizeof(lock_path), "%s/vsouchi.lock", base_dir);
     g_lock_fd = open(lock_path, O_RDWR | O_CREAT, 0666);
     if (g_lock_fd < 0 || flock(g_lock_fd, LOCK_EX | LOCK_NB) < 0) {
@@ -242,7 +242,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
         _exit(1);
     }
 
-    char pid_path[512];
+    char pid_path[VSOUCHI_PATH_MAX];
     snprintf(pid_path, sizeof(pid_path), "%s/vsouchi.pid", base_dir);
     FILE *pf = fopen(pid_path, "w");
     if (pf) {
@@ -257,7 +257,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    char path[256];
+    char path[VSOUCHI_PATH_MAX];
     snprintf(path, sizeof(path), "%s/sys", base_dir); mkdir(path, 0777);
     snprintf(path, sizeof(path), "%s/sys/class", base_dir); mkdir(path, 0777);
     snprintf(path, sizeof(path), "%s/sys/class/video4linux", base_dir); mkdir(path, 0777);
@@ -267,7 +267,7 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
     int dummy_fd = open(path, O_CREAT | O_RDWR, 0666);
     if (dummy_fd >= 0) close(dummy_fd);
 
-    char sock_path[256];
+    char sock_path[VSOUCHI_PATH_MAX];
     snprintf(sock_path, sizeof(sock_path), "%s/video0", base_dir);
     unlink(sock_path);
 

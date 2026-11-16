@@ -172,6 +172,12 @@ static inline int is_potential_v4l2_path(const char* path) {
     return 0;
 }
 
+static inline int is_potential_v4l2_at_path(int dirfd, const char *path) {
+    if (!path) return 0;
+    if (path[0] != '/' && dirfd != AT_FDCWD) return 0;
+    return is_potential_v4l2_path(path);
+}
+
 static int parse_minor_from_path(const char* path) {
     if (!path) return 0;
     const char* p = strstr(path, "81:");
@@ -598,14 +604,14 @@ int fstat64(int fd, struct stat64 *statbuf) {
 
 int fstatat(int dirfd, const char *pathname, struct stat *statbuf, int flags) {
     init_pointers();
-    if (!is_potential_v4l2_path(pathname)) return real_fstatat ? real_fstatat(dirfd, pathname, statbuf, flags) : -1;
+    if (!is_potential_v4l2_at_path(dirfd, pathname)) return real_fstatat ? real_fstatat(dirfd, pathname, statbuf, flags) : -1;
     if (is_virtual_node_active(pathname)) return fill_virtual_path_stat(pathname, statbuf, (flags & AT_SYMLINK_NOFOLLOW) != 0);
     return real_fstatat ? real_fstatat(dirfd, pathname, statbuf, flags) : -1;
 }
 
 int fstatat64(int dirfd, const char *pathname, struct stat64 *statbuf, int flags) {
     init_pointers();
-    if (!is_potential_v4l2_path(pathname)) return real_fstatat64 ? real_fstatat64(dirfd, pathname, statbuf, flags) : -1;
+    if (!is_potential_v4l2_at_path(dirfd, pathname)) return real_fstatat64 ? real_fstatat64(dirfd, pathname, statbuf, flags) : -1;
     if (is_virtual_node_active(pathname)) return fill_virtual_path_stat64(pathname, statbuf, (flags & AT_SYMLINK_NOFOLLOW) != 0);
     return real_fstatat64 ? real_fstatat64(dirfd, pathname, statbuf, flags) : -1;
 }
@@ -674,7 +680,7 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
     init_pointers();
     mode_t mode = 0;
     if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); }
-    if (!is_potential_v4l2_path(pathname)) return real_openat ? real_openat(dirfd, pathname, flags, mode) : -1;
+    if (!is_potential_v4l2_at_path(dirfd, pathname)) return real_openat ? real_openat(dirfd, pathname, flags, mode) : -1;
 
     char v_udev[VSOUCHI_PATH_MAX];
     if (translate_udev_data_path(pathname, v_udev, sizeof(v_udev))) {
@@ -700,7 +706,7 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
     init_pointers();
     mode_t mode = 0;
     if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); }
-    if (!is_potential_v4l2_path(pathname)) return real_openat64 ? real_openat64(dirfd, pathname, flags, mode) : -1;
+    if (!is_potential_v4l2_at_path(dirfd, pathname)) return real_openat64 ? real_openat64(dirfd, pathname, flags, mode) : -1;
 
     char v_udev[VSOUCHI_PATH_MAX];
     if (translate_udev_data_path(pathname, v_udev, sizeof(v_udev))) {
@@ -952,7 +958,7 @@ long syscall(long number, ...) {
     else if (number == SYS_openat) {
         const char *path = (const char *)a2;
         int flags = (int)a3;
-        if (is_potential_v4l2_path(path)) {
+        if (is_potential_v4l2_at_path((int)a1, path)) {
             char v_udev[VSOUCHI_PATH_MAX];
             if (translate_udev_data_path(path, v_udev, sizeof(v_udev))) {
                 long vfd = real_syscall ? real_syscall(SYS_openat, a1, (long)v_udev, a3, a4) : -1;

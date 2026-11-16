@@ -114,7 +114,7 @@ uint32_t get_correct_colorspace(uint32_t width, uint32_t height) {
 
 uint32_t v4l2_get_current_frame_size() {
     if (g_current_format == V4L2_PIX_FMT_MJPEG) {
-        return g_current_width * g_current_height;
+        return g_current_width * g_current_height * 2;
     } else if (g_current_format == v4l2_fourcc('R', 'G', '1', '6') ||
                g_current_format == v4l2_fourcc('G', 'R', '1', '6') ||
                g_current_format == v4l2_fourcc('G', 'B', '1', '6') ||
@@ -571,7 +571,7 @@ void v4l2_push_filled_buffer(int index) {
 void v4l2_abort_write(int index) {
     pthread_mutex_lock(&g_v4l2_mutex);
     if (index >= 0 && index < (int)g_buffer_count) {
-        g_buffer_state[index] = 1;
+        g_buffer_state[index] = g_is_streaming ? 1 : 0;
     }
     if (g_in_flight_writes > 0) {
         g_in_flight_writes--;

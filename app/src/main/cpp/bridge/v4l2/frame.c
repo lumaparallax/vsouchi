@@ -34,9 +34,12 @@ static inline void mirror_row_8(const uint8_t* src, uint8_t* dst, int width) {
     }
 }
 
-static inline void mirror_row_16(const uint16_t* src, uint16_t* dst, int count) {
-    for (int i = 0; i < count; i++) {
-        dst[i] = src[count - 1 - i];
+static inline void mirror_row_uv(const uint8_t* src, uint8_t* dst, int pair_count) {
+    for (int i = 0; i < pair_count; i++) {
+        int src_idx = (pair_count - 1 - i) * 2;
+        int dst_idx = i * 2;
+        dst[dst_idx]     = src[src_idx];
+        dst[dst_idx + 1] = src[src_idx + 1];
     }
 }
 
@@ -52,7 +55,12 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
     uint32_t seq = __atomic_fetch_add(&g_frame_sequence, 1, __ATOMIC_RELAXED);
 
     int index = v4l2_get_queued_index();
-    if (index == -1 || !v4l2_is_buffer_ready_for_write(index)) {
+    if (index == -1) {
+        AImage_delete(image);
+        return;
+    }
+    if (!v4l2_is_buffer_ready_for_write(index)) {
+        v4l2_abort_write(index);
         AImage_delete(image);
         return;
     }
@@ -64,56 +72,92 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
         return;
     }
 
-    int android_fmt = v4l2_get_android_format();
+    /* Snapshot stream parameters atomically so mid-frame reconfig cannot desync sizes */
+    pthread_mutex_lock(&g_v4l2_mutex);
+    int android_fmt = g_current_android_format;
+    int target_w = (int)g_current_width;
+    int target_h = (int)g_current_height;
+    uint32_t fmt = g_current_format;
+    int rotate = g_current_rotate;
+    int hflip = g_sensor_hflip;
+    int vflip = g_sensor_vflip;
+    pthread_mutex_unlock(&g_v4l2_mutex);
+
+    int is_rotated = (rotate == 90 || rotate == 270);
+    uint32_t max_capacity = v4l2_get_buffer_size(index);
 
     if (android_fmt == 256 || android_fmt == 32 || android_fmt == 37 || android_fmt == 1212500294) {
         uint8_t* data = NULL;
         int data_length = 0;
-        AImage_getPlaneData(image, 0, &data, &data_length);
+        if (AImage_getPlaneData(image, 0, &data, &data_length) != AMEDIA_OK || !data || data_length <= 0) {
+            v4l2_abort_write(index);
+            AImage_delete(image);
+            return;
+        }
 
-        uint32_t max_capacity = v4l2_get_buffer_size(index);
-        uint32_t copy_sz = (data_length < max_capacity) ? (uint32_t)data_length : max_capacity;
-
+        uint32_t copy_sz = ((uint32_t)data_length < max_capacity) ? (uint32_t)data_length : max_capacity;
         memcpy(payload, data, copy_sz);
         v4l2_set_buffer_bytesused(index, copy_sz);
 
     } else {
-        int32_t width, height;
+        int32_t width = 0, height = 0;
         AImage_getWidth(image, &width);
         AImage_getHeight(image, &height);
 
-        uint8_t *y_data, *u_data, *v_data;
-        int y_len, u_len, v_len;
-        AImage_getPlaneData(image, 0, &y_data, &y_len);
-        AImage_getPlaneData(image, 1, &u_data, &u_len);
-        AImage_getPlaneData(image, 2, &v_data, &v_len);
+        if (target_w <= 0 || target_h <= 0) {
+            v4l2_abort_write(index);
+            AImage_delete(image);
+            return;
+        }
 
-        int y_stride, uv_stride, uv_pixel_stride;
+        int expected_w = is_rotated ? target_h : target_w;
+        int expected_h = is_rotated ? target_w : target_h;
+        uint32_t req_out_sz = (fmt == v4l2_fourcc('Y', 'U', 'Y', 'V'))
+                ? (uint32_t)(target_w * target_h * 2)
+                : (uint32_t)((target_w * target_h * 3) / 2);
+
+        if (width != expected_w || height != expected_h || max_capacity < req_out_sz) {
+            v4l2_abort_write(index);
+            AImage_delete(image);
+            return;
+        }
+
+        uint8_t *y_data = NULL, *u_data = NULL, *v_data = NULL;
+        int y_len = 0, u_len = 0, v_len = 0;
+        if (AImage_getPlaneData(image, 0, &y_data, &y_len) != AMEDIA_OK ||
+            AImage_getPlaneData(image, 1, &u_data, &u_len) != AMEDIA_OK ||
+            AImage_getPlaneData(image, 2, &v_data, &v_len) != AMEDIA_OK ||
+            !y_data || !u_data || !v_data) {
+            v4l2_abort_write(index);
+            AImage_delete(image);
+            return;
+        }
+
+        int y_stride = 0, uv_stride = 0, uv_pixel_stride = 0;
         AImage_getPlaneRowStride(image, 0, &y_stride);
         AImage_getPlaneRowStride(image, 2, &uv_stride);
         AImage_getPlanePixelStride(image, 2, &uv_pixel_stride);
 
-        int target_w = v4l2_get_width();
-        int target_h = v4l2_get_height();
-        uint32_t fmt = v4l2_get_current_format();
-
-        int is_rotated = is_rotated_90_270();
-        int eff_hflip = g_sensor_hflip ^ (g_current_rotate == 180);
-        int eff_vflip = g_sensor_vflip ^ (g_current_rotate == 180);
+        int eff_hflip = hflip ^ (rotate == 180);
+        int eff_vflip = vflip ^ (rotate == 180);
 
         int is_nv12 = (fmt == v4l2_fourcc('N', 'V', '1', '2'));
         int is_nv21 = (fmt == v4l2_fourcc('N', 'V', '2', '1'));
 
         /* Check if hardware plane layout natively matches requested semi-planar NV12/NV21 (not applicable if dimensions are transposed) */
-        int match_nv12 = (!is_rotated && is_nv12 && uv_pixel_stride == 2 && u_data == v_data - 1);
-        int match_nv21 = (!is_rotated && is_nv21 && uv_pixel_stride == 2 && v_data == u_data - 1);
+        int match_nv12 = (!is_rotated && is_nv12 &&
+                          uv_pixel_stride == 2 && u_data == v_data - 1);
+        int match_nv21 = (!is_rotated && is_nv21 &&
+                          uv_pixel_stride == 2 && v_data == u_data - 1);
 
         if (match_nv12 || match_nv21) {
-            uint32_t total_sz = (width * height * 3) / 2;
+            uint32_t total_sz = (uint32_t)((width * height * 3) / 2);
 
-            if (!eff_hflip && !eff_vflip && y_stride == width && uv_stride == width) {
-                /* Fast-path: Direct linear copy without pixel-format conversion */
-                memcpy(payload, y_data, total_sz);
+            if (!eff_hflip && !eff_vflip) {
+                /* Copy Y and UV planes separately to handle Gralloc vertical slice-height / page gaps */
+                const uint8_t* src_uv = match_nv12 ? u_data : v_data;
+                CopyPlane(y_data, y_stride, payload, width, width, height);
+                CopyPlane(src_uv, uv_stride, payload + (width * height), width, width, height / 2);
             } else {
                 /* Single-pass row unpadding with combined HFLIP / VFLIP */
                 uint8_t* dst_y = payload;
@@ -137,9 +181,7 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
                     const uint8_t* src_line = src_uv + (r * uv_stride);
 
                     if (eff_hflip) {
-                        mirror_row_16((const uint16_t*)src_line,
-                                      (uint16_t*)dst_line,
-                                      width / 2);
+                        mirror_row_uv(src_line, dst_line, width / 2);
                     } else {
                         memcpy(dst_line, src_line, width);
                     }
@@ -150,15 +192,21 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
             uint32_t base_size = (width * height * 3) / 2;
             uint32_t num_buffers = 1;
             if (is_rotated) {
-                num_buffers = (g_sensor_hflip || g_sensor_vflip) ? 3 : 2;
+                num_buffers = (hflip || vflip) ? 3 : 2;
             } else if (eff_hflip || eff_vflip) {
                 num_buffers = 2;
             }
             uint32_t req_size = base_size * num_buffers;
 
             if (g_temp_i420_size < req_size) {
-                if (g_temp_i420_buffer) free(g_temp_i420_buffer);
-                g_temp_i420_buffer = (uint8_t*)malloc(req_size);
+                uint8_t* new_buf = (uint8_t*)malloc(req_size);
+                if (!new_buf) {
+                    v4l2_abort_write(index);
+                    AImage_delete(image);
+                    return;
+                }
+                free(g_temp_i420_buffer);
+                g_temp_i420_buffer = new_buf;
                 g_temp_i420_size = req_size;
             }
 
@@ -184,7 +232,7 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
                 uint8_t* rot_u = rot_y + (target_w * target_h);
                 uint8_t* rot_v = rot_u + ((target_w * target_h) / 4);
 
-                enum RotationMode rot_mode = (g_current_rotate == 90) ? kRotate90 : kRotate270;
+                enum RotationMode rot_mode = (rotate == 90) ? kRotate90 : kRotate270;
                 I420Rotate(temp_y, width,
                            temp_u, width / 2,
                            temp_v, width / 2,
@@ -198,14 +246,14 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
                 src_u = rot_u;
                 src_v = rot_v;
 
-                if (g_sensor_hflip || g_sensor_vflip) {
+                if (hflip || vflip) {
                     uint8_t* flip_y = g_temp_i420_buffer + (base_size * 2);
                     uint8_t* flip_u = flip_y + (target_w * target_h);
                     uint8_t* flip_v = flip_u + ((target_w * target_h) / 4);
 
-                    int copy_height = g_sensor_vflip ? -target_h : target_h;
+                    int copy_height = vflip ? -target_h : target_h;
 
-                    if (g_sensor_hflip) {
+                    if (hflip) {
                         I420Mirror(rot_y, target_w,
                                    rot_u, target_w / 2,
                                    rot_v, target_w / 2,
@@ -289,6 +337,11 @@ static void onImageAvailableCallback(void* context, AImageReader* reader) {
                          out_y, target_w, out_u, target_w / 2, out_v, target_w / 2,
                          target_w, target_h);
                 v4l2_set_buffer_bytesused(index, (target_w * target_h * 3) / 2);
+            }
+            else {
+                v4l2_abort_write(index);
+                AImage_delete(image);
+                return;
             }
         }
     }

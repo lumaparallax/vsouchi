@@ -36,6 +36,7 @@ extern int (*real_open64)(const char *pathname, int flags, ...);
 extern int (*real_openat)(int dirfd, const char *pathname, int flags, ...);
 extern int (*real_openat64)(int dirfd, const char *pathname, int flags, ...);
 extern int (*real_close)(int fd);
+extern int (*real_dup2)(int oldfd, int newfd);
 extern int (*real_poll)(struct pollfd *fds, nfds_t nfds, int timeout);
 extern int (*real_select)(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout);
 extern int (*real_pselect)(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, const struct timespec *timeout, const sigset_t *sigmask);

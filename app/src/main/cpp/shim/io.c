@@ -71,6 +71,9 @@ FILE *(*real_fopen)(const char *pathname, const char *mode) = NULL;
 FILE *(*real_fopen64)(const char *pathname, const char *mode) = NULL;
 ssize_t (*real_readlink)(const char *pathname, char *buf, size_t bufsiz) = NULL;
 ssize_t (*real_readlinkat)(int dirfd, const char *pathname, char *buf, size_t bufsiz) = NULL;
+int (*real_dup)(int oldfd) = NULL;
+int (*real_dup2)(int oldfd, int newfd) = NULL;
+int (*real_dup3)(int oldfd, int newfd, int flags) = NULL;
 
 int shim_v4l2_handle_ioctl(int fd, int request, void* arg);
 
@@ -112,6 +115,9 @@ __attribute__((constructor)) void init_pointers(void) {
     real_readlinkat = dlsym(RTLD_NEXT, "readlinkat");
     real_fopen = dlsym(RTLD_NEXT, "fopen");
     real_fopen64 = dlsym(RTLD_NEXT, "fopen64");
+    real_dup = dlsym(RTLD_NEXT, "dup");
+    real_dup2 = dlsym(RTLD_NEXT, "dup2");
+    real_dup3 = dlsym(RTLD_NEXT, "dup3");
 }
 
 void *v4l2_mmap(void *addr, size_t length, int prot, int flags, int fd, int64_t offset) {
@@ -841,6 +847,45 @@ int close(int fd) {
     return ret;
 }
 
+static void track_dup_fd(int oldfd, int newfd, int cloexec) {
+    if (newfd < 0 || newfd >= 1024) return;
+    pthread_mutex_lock(&g_ipc_mutex);
+    if (oldfd >= 0 && oldfd < 1024 && g_vsouchi_fds[oldfd]) {
+        g_vsouchi_fds[newfd] = 1;
+        g_vsouchi_fd_minor[newfd] = g_vsouchi_fd_minor[oldfd];
+        g_vsouchi_fd_flags[newfd] = cloexec
+            ? (g_vsouchi_fd_flags[oldfd] | O_CLOEXEC)
+            : (g_vsouchi_fd_flags[oldfd] & ~O_CLOEXEC);
+        g_open_count++;
+    }
+    pthread_mutex_unlock(&g_ipc_mutex);
+}
+
+int dup(int oldfd) {
+    init_pointers();
+    int newfd = real_dup ? real_dup(oldfd) : -1;
+    if (newfd >= 0 && oldfd != newfd) track_dup_fd(oldfd, newfd, 0);
+    return newfd;
+}
+
+int dup2(int oldfd, int newfd) {
+    init_pointers();
+    if (oldfd == newfd) return real_dup2 ? real_dup2(oldfd, newfd) : -1;
+    if (newfd >= 0 && newfd < 1024 && g_vsouchi_fds[newfd]) close(newfd);
+    int res = real_dup2 ? real_dup2(oldfd, newfd) : -1;
+    if (res >= 0) track_dup_fd(oldfd, res, 0);
+    return res;
+}
+
+int dup3(int oldfd, int newfd, int flags) {
+    init_pointers();
+    if (oldfd == newfd) { errno = EINVAL; return -1; }
+    if (newfd >= 0 && newfd < 1024 && g_vsouchi_fds[newfd]) close(newfd);
+    int res = real_dup3 ? real_dup3(oldfd, newfd, flags) : -1;
+    if (res >= 0) track_dup_fd(oldfd, res, (flags & O_CLOEXEC) != 0);
+    return res;
+}
+
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
     init_pointers();
     if (fd >= 0 && fd < 1024 && g_vsouchi_fds[fd]) {
@@ -930,6 +975,21 @@ long syscall(long number, ...) {
         int handled = 0;
         ssize_t res = handle_virtual_readlink((const char *)a2, (char *)a3, (size_t)a4, &handled);
         if (handled) return (long)res;
+    }
+#endif
+#ifdef SYS_dup
+    else if (number == SYS_dup) {
+        return (long)dup((int)a1);
+    }
+#endif
+#ifdef SYS_dup2
+    else if (number == SYS_dup2) {
+        return (long)dup2((int)a1, (int)a2);
+    }
+#endif
+#ifdef SYS_dup3
+    else if (number == SYS_dup3) {
+        return (long)dup3((int)a1, (int)a2, (int)a3);
     }
 #endif
 

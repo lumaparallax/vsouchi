@@ -584,7 +584,8 @@ int shim_v4l2_handle_ioctl(int fd, int request, void *arg) {
             safe_write(g_broker_fd, &ack, 1);
             int ev_fd = recv_single_fd(g_broker_fd);
             if (ev_fd >= 0) {
-                dup2(ev_fd, fd);
+                if (real_dup2) real_dup2(ev_fd, fd);
+                else dup2(ev_fd, fd);
 
                 /* Enforce the descriptor's true open flags on the adopted eventfd */
                 int cur_flags = fcntl(fd, F_GETFL);

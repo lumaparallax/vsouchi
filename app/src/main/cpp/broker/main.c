@@ -226,6 +226,18 @@ JNIEXPORT jint JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_nativeGet
     return sv[1];
 }
 
+static void write_sysfs_attr(const char *dir, const char *attr, const char *val) {
+    char attr_path[VSOUCHI_PATH_MAX];
+    int n = snprintf(attr_path, sizeof(attr_path), "%s/%s", dir, attr);
+    if (n < 0 || (size_t)n >= sizeof(attr_path)) return;
+
+    int fd = open(attr_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        write(fd, val, strlen(val));
+        close(fd);
+    }
+}
+
 JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNIEnv *env, jclass clazz) {
     (*env)->GetJavaVM(env, &g_jvm);
     g_daemon_entry_class = (jclass)(*env)->NewGlobalRef(env, clazz);
@@ -262,10 +274,25 @@ JNIEXPORT void JNICALL Java_io_github_lumaparallax_vsouchi_DaemonEntry_start(JNI
     snprintf(path, sizeof(path), "%s/sys/class", base_dir); mkdir(path, 0777);
     snprintf(path, sizeof(path), "%s/sys/class/video4linux", base_dir); mkdir(path, 0777);
 
-    // Create empty file so target apps don't skip the node
+    snprintf(path, sizeof(path), "%s/run", base_dir); mkdir(path, 0777);
+    snprintf(path, sizeof(path), "%s/run/udev", base_dir); mkdir(path, 0777);
+    snprintf(path, sizeof(path), "%s/run/udev/data", base_dir); mkdir(path, 0777);
+
+    write_sysfs_attr(path, "c81:0",
+                     "I:1000000\n"
+                     "E:ID_V4L_VERSION=2\n"
+                     "E:ID_V4L_PRODUCT=vSouchi Virtual Camera\n"
+                     "E:ID_V4L_CAPABILITIES=:capture:\n"
+                     "G:uaccess\n");
+
     snprintf(path, sizeof(path), "%s/sys/class/video4linux/video0", base_dir);
-    int dummy_fd = open(path, O_CREAT | O_RDWR, 0666);
-    if (dummy_fd >= 0) close(dummy_fd);
+    unlink(path);
+    mkdir(path, 0777);
+
+    write_sysfs_attr(path, "name", "vSouchi Virtual Camera\n");
+    write_sysfs_attr(path, "index", "0\n");
+    write_sysfs_attr(path, "dev", "81:0\n");
+    write_sysfs_attr(path, "uevent", "MAJOR=81\nMINOR=0\nDEVNAME=video0\n");
 
     char sock_path[VSOUCHI_PATH_MAX];
     snprintf(sock_path, sizeof(sock_path), "%s/video0", base_dir);

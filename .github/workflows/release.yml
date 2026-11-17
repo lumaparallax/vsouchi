@@ -1,0 +1,225 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    if: github.repository == 'lumaparallax/vsouchi'
+    runs-on: ubuntu-24.04
+    env:
+      CI: "true"
+      NDK_VERSION: 26.1.10909125
+      CMAKE_VERSION: 3.22.1
+      GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Verify Tag Is Merged Into master
+        run: |
+          git fetch origin master
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "Error: Release tags must point to a commit merged into master."
+            exit 1
+          fi
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Toolchains
+        run: |
+          sdkmanager --install "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}"
+
+          APT_OK=0
+          for i in 1 2 3; do
+            if sudo apt-get update && \
+               sudo apt-get install -y --no-install-recommends \
+                 -o Acquire::Retries=5 \
+                 gcc-aarch64-linux-gnu \
+                 libc6-dev-arm64-cross; then
+              APT_OK=1
+              break
+            fi
+            echo "apt-get failed (attempt $i/3), retrying in 5s..."
+            sleep 5
+          done
+          [ "$APT_OK" -eq 1 ] || exit 1
+
+      - name: Configure Release Signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || \
+             [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "Error: One or more release signing secrets are missing."
+            exit 1
+          fi
+
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > release.keystore
+          [ -s release.keystore ] || { echo "Error: Decoded keystore is empty."; exit 1; }
+
+          cat <<EOF > key.properties
+          storeFile=release.keystore
+          storePassword=${KEYSTORE_PASSWORD}
+          keyAlias=${KEY_ALIAS}
+          keyPassword=${KEY_PASSWORD}
+          EOF
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Build Android Release APKs
+        run: |
+          ./gradlew :app:assembleRelease :classLoader:assembleRelease \
+                    --no-daemon \
+                    --parallel
+
+      - name: Clean Up Signing Credentials
+        if: always()
+        run: rm -f release.keystore key.properties
+
+      - name: Build Bionic & Glibc Release Shims
+        run: |
+          NDK_TOOLCHAIN="${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
+          SDK_CMAKE="${ANDROID_HOME}/cmake/${CMAKE_VERSION}/bin/cmake"
+          LLVM_STRIP="${ANDROID_HOME}/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+
+          # 1. Bionic (arm64-v8a)
+          "$SDK_CMAKE" -S app/src/main/cpp -B build-bionic-arm64-rel \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_TOOLCHAIN" \
+            -DANDROID_ABI="arm64-v8a" \
+            -DANDROID_PLATFORM=android-26 \
+            -DBUILD_SHIM=libc \
+            -DCMAKE_BUILD_TYPE=Release
+          "$SDK_CMAKE" --build build-bionic-arm64-rel
+          "$LLVM_STRIP" --strip-unneeded build-bionic-arm64-rel/libvsouchi.so
+
+          # 2. Bionic (x86_64)
+          "$SDK_CMAKE" -S app/src/main/cpp -B build-bionic-x86_64-rel \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_TOOLCHAIN" \
+            -DANDROID_ABI="x86_64" \
+            -DANDROID_PLATFORM=android-26 \
+            -DBUILD_SHIM=libc \
+            -DCMAKE_BUILD_TYPE=Release
+          "$SDK_CMAKE" --build build-bionic-x86_64-rel
+          "$LLVM_STRIP" --strip-unneeded build-bionic-x86_64-rel/libvsouchi.so
+
+          # 3. Glibc (aarch64)
+          cmake -S app/src/main/cpp -B build-glibc-arm64-rel \
+            -DBUILD_SHIM=glibc \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
+          cmake --build build-glibc-arm64-rel
+          aarch64-linux-gnu-strip --strip-unneeded build-glibc-arm64-rel/libvsouchi-glibc.so
+
+          # 4. Glibc (x86_64)
+          cmake -S app/src/main/cpp -B build-glibc-x86_64-rel \
+            -DBUILD_SHIM=glibc \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc
+          cmake --build build-glibc-x86_64-rel
+          strip --strip-unneeded build-glibc-x86_64-rel/libvsouchi-glibc.so
+
+      - name: Package Release Artifacts & Checksums
+        run: |
+          mkdir -p dist/staging
+
+          APP_REL_ARM=$(find app/build/outputs/apk/release/ -name "*arm64-v8a*.apk" | head -n 1)
+          APP_REL_X86=$(find app/build/outputs/apk/release/ -name "*x86_64*.apk" | head -n 1)
+          APP_REL_UNI=$(find app/build/outputs/apk/release/ -name "*universal*.apk" | head -n 1)
+          LOADER_REL=$(find classLoader/build/outputs/apk/release/ -name "*.apk" | head -n 1)
+
+          BIONIC_REL_ARM="build-bionic-arm64-rel/libvsouchi.so"
+          BIONIC_REL_X86="build-bionic-x86_64-rel/libvsouchi.so"
+          GLIBC_REL_ARM="build-glibc-arm64-rel/libvsouchi-glibc.so"
+          GLIBC_REL_X86="build-glibc-x86_64-rel/libvsouchi-glibc.so"
+          RUNNER_SRC=".github/scripts/vsouchi.sh"
+
+          for f in "$APP_REL_ARM" "$APP_REL_X86" "$APP_REL_UNI" "$LOADER_REL" \
+                   "$BIONIC_REL_ARM" "$BIONIC_REL_X86" "$GLIBC_REL_ARM" "$GLIBC_REL_X86" \
+                   "$RUNNER_SRC"; do
+            if [ -z "$f" ] || [ ! -f "$f" ]; then
+              echo "Error: Missing required release artifact or script: $f"
+              exit 1
+            fi
+          done
+
+          cp "$APP_REL_ARM" "dist/vsouchi-arm64-v8a.apk"
+          cp "$APP_REL_X86" "dist/vsouchi-x86_64.apk"
+          cp "$APP_REL_UNI" "dist/vsouchi-universal.apk"
+
+          create_runtime_bundle() {
+            local bundle_name="$1"
+            local loader_apk="$2"
+            local bionic_so="$3"
+            local glibc_so="$4"
+
+            local target_dir="dist/staging/${bundle_name}"
+            mkdir -p "$target_dir"
+
+            cp "$bionic_so" "$target_dir/libvsouchi.so"
+            cp "$glibc_so" "$target_dir/libvsouchi-glibc.so"
+
+            cp "$loader_apk" "$target_dir/classLoader.apk"
+            chmod 444 "$target_dir/classLoader.apk"
+
+            cp "$RUNNER_SRC" "$target_dir/vsouchi.sh"
+            chmod +x "$target_dir/vsouchi.sh"
+
+            tar -czf "dist/${bundle_name}.tar.gz" -C "$target_dir" .
+          }
+
+          create_runtime_bundle "vsouchi-aarch64" \
+            "$LOADER_REL" "$BIONIC_REL_ARM" "$GLIBC_REL_ARM"
+
+          create_runtime_bundle "vsouchi-x86_64" \
+            "$LOADER_REL" "$BIONIC_REL_X86" "$GLIBC_REL_X86"
+
+          rm -rf dist/staging
+
+          (
+            cd dist
+            sha256sum vsouchi-arm64-v8a.apk \
+                      vsouchi-x86_64.apk \
+                      vsouchi-universal.apk \
+                      vsouchi-aarch64.tar.gz \
+                      vsouchi-x86_64.tar.gz > SHA256SUMS.txt
+          )
+
+      - name: Create Draft GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: |
+            dist/vsouchi-arm64-v8a.apk
+            dist/vsouchi-x86_64.apk
+            dist/vsouchi-universal.apk
+            dist/vsouchi-aarch64.tar.gz
+            dist/vsouchi-x86_64.tar.gz
+            dist/SHA256SUMS.txt

@@ -1,0 +1,176 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - 'master'
+  pull_request:
+    branches:
+      - 'master'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug:
+    runs-on: ubuntu-24.04
+    env:
+      CI: "true"
+      NDK_VERSION: 26.1.10909125
+      CMAKE_VERSION: 3.22.1
+      GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Toolchains
+        run: |
+          sdkmanager --install "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}"
+
+          APT_OK=0
+          for i in 1 2 3; do
+            if sudo apt-get update && \
+               sudo apt-get install -y --no-install-recommends \
+                 -o Acquire::Retries=5 \
+                 gcc-aarch64-linux-gnu \
+                 libc6-dev-arm64-cross; then
+              APT_OK=1
+              break
+            fi
+            echo "apt-get failed (attempt $i/3), retrying in 5s..."
+            sleep 5
+          done
+          [ "$APT_OK" -eq 1 ] || exit 1
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Build Android Debug APKs
+        run: |
+          ./gradlew :app:assembleDebug :classLoader:assembleDebug \
+                    --no-daemon \
+                    --parallel
+
+      - name: Build Bionic & Glibc Debug Shims
+        run: |
+          NDK_TOOLCHAIN="${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
+
+          # 1. Bionic (arm64-v8a)
+          cmake -S app/src/main/cpp -B build-bionic-arm64-dbg \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_TOOLCHAIN" \
+            -DANDROID_ABI="arm64-v8a" \
+            -DANDROID_PLATFORM=android-26 \
+            -DBUILD_SHIM=libc \
+            -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-bionic-arm64-dbg
+
+          # 2. Bionic (x86_64)
+          cmake -S app/src/main/cpp -B build-bionic-x86_64-dbg \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_TOOLCHAIN" \
+            -DANDROID_ABI="x86_64" \
+            -DANDROID_PLATFORM=android-26 \
+            -DBUILD_SHIM=libc \
+            -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-bionic-x86_64-dbg
+
+          # 3. Glibc (aarch64)
+          cmake -S app/src/main/cpp -B build-glibc-arm64-dbg \
+            -DBUILD_SHIM=glibc \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
+          cmake --build build-glibc-arm64-dbg
+
+          # 4. Glibc (x86_64)
+          cmake -S app/src/main/cpp -B build-glibc-x86_64-dbg \
+            -DBUILD_SHIM=glibc \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc
+          cmake --build build-glibc-x86_64-dbg
+
+      - name: Package Debug Bundles
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          mkdir -p dist/staging
+
+          APP_DBG_ARM=$(find app/build/outputs/apk/debug/ -name "*arm64-v8a*.apk" | head -n 1)
+          APP_DBG_X86=$(find app/build/outputs/apk/debug/ -name "*x86_64*.apk" | head -n 1)
+          LOADER_DBG=$(find classLoader/build/outputs/apk/debug/ -name "*.apk" | head -n 1)
+
+          BIONIC_DBG_ARM="build-bionic-arm64-dbg/libvsouchi.so"
+          BIONIC_DBG_X86="build-bionic-x86_64-dbg/libvsouchi.so"
+          GLIBC_DBG_ARM="build-glibc-arm64-dbg/libvsouchi-glibc.so"
+          GLIBC_DBG_X86="build-glibc-x86_64-dbg/libvsouchi-glibc.so"
+          RUNNER_SRC=".github/scripts/vsouchi-debug.sh"
+
+          for f in "$APP_DBG_ARM" "$APP_DBG_X86" "$LOADER_DBG" \
+                   "$BIONIC_DBG_ARM" "$BIONIC_DBG_X86" "$GLIBC_DBG_ARM" "$GLIBC_DBG_X86" \
+                   "$RUNNER_SRC"; do
+            if [ -z "$f" ] || [ ! -f "$f" ]; then
+              echo "Error: Missing required build artifact or script: $f"
+              exit 1
+            fi
+          done
+
+          create_bundle() {
+            local bundle_name="$1"
+            local app_apk="$2"
+            local loader_apk="$3"
+            local bionic_so="$4"
+            local glibc_so="$5"
+
+            local target_dir="dist/staging/${bundle_name}"
+            mkdir -p "$target_dir"
+            cp "$app_apk" "$target_dir/vsouchi-app-debug.apk"
+            cp "$bionic_so" "$target_dir/libvsouchi.so"
+            cp "$glibc_so" "$target_dir/libvsouchi-glibc.so"
+
+            cp "$loader_apk" "$target_dir/classLoader.apk"
+            chmod 444 "$target_dir/classLoader.apk"
+
+            cp "$RUNNER_SRC" "$target_dir/vsouchi-debug.sh"
+            chmod +x "$target_dir/vsouchi-debug.sh"
+
+            tar -czf "dist/${bundle_name}.tar.gz" -C dist/staging "$bundle_name"
+          }
+
+          create_bundle "vsouchi-${SHORT_SHA}-debug-aarch64" \
+            "$APP_DBG_ARM" "$LOADER_DBG" "$BIONIC_DBG_ARM" "$GLIBC_DBG_ARM"
+
+          create_bundle "vsouchi-${SHORT_SHA}-debug-x86_64" \
+            "$APP_DBG_X86" "$LOADER_DBG" "$BIONIC_DBG_X86" "$GLIBC_DBG_X86"
+
+          rm -rf dist/staging
+
+      - name: Upload AArch64 Debug Bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: vsouchi-ci-debug-aarch64
+          path: dist/*-debug-aarch64.tar.gz
+          retention-days: 5
+          if-no-files-found: error
+
+      - name: Upload x86_64 Debug Bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: vsouchi-ci-debug-x86_64
+          path: dist/*-debug-x86_64.tar.gz
+          retention-days: 5
+          if-no-files-found: error
